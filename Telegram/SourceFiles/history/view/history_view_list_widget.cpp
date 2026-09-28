@@ -47,6 +47,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/click_handler_types.h"
 #include "core/core_settings.h"
+#include "core/file_utilities.h"
 #include "core/phone_click_handler.h"
 #include "apiwrap.h"
 #include "api/api_who_reacted.h"
@@ -59,6 +60,24 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_session_controller.h"
 #include "window/window_peer_menu.h"
 #include "main/main_session.h"
+#include "logs.h"
+#include "elitegram/elitegram_deleted_messages.h"
+#include <QtCore/QFileInfo>
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QSaveFile>
+#include <QtCore/QStringList>
+#include <QtCore/QUrl>
+#include <QtGui/QDesktopServices>
+#include <QtGui/QClipboard>
+#include <QtGui/QImageReader>
+#include <QtGui/QMovie>
+#include <QtGui/QPixmap>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QFileDialog>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QMenu>
+#include <QtWidgets/QVBoxLayout>
 #include "media/player/media_player_instance.h"
 #include "dialogs/ui/dialogs_video_userpic.h"
 #include "ui/layers/generic_box.h"
@@ -105,6 +124,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtWidgets/QApplication>
 #include <QtCore/QMimeData>
+#include <QtCore/QDateTime>
+#include <QtCore/QTimer>
+#include <QtGui/QFontMetrics>
 
 namespace HistoryView {
 namespace {
@@ -115,6 +137,71 @@ constexpr auto kPreloadedScreensCountFull
 	= kPreloadedScreensCount + 1 + kPreloadedScreensCount;
 constexpr auto kClearUserpicsAfter = 50;
 constexpr auto kScrollDateHideOnDayCrossingTimeout = crl::time(3000);
+
+void ShowArchivedImage(QWidget *parent, const QString &path) {
+	auto reader = QImageReader(path);
+	if (!reader.canRead()
+		&& QFileInfo(path + u".thumb.png"_q).isFile()) {
+		reader.setFileName(path + u".thumb.png"_q);
+	}
+	const auto dimensions = reader.size();
+	if (!dimensions.isValid()
+		|| int64(dimensions.width()) * dimensions.height() > 100000000) {
+		return;
+	}
+	auto dialog = new QDialog(parent);
+	dialog->setAttribute(Qt::WA_DeleteOnClose);
+	dialog->setWindowTitle(u"Deleted media · local copy"_q);
+	auto layout = new QVBoxLayout(dialog);
+	auto label = new QLabel(dialog);
+	label->setAlignment(Qt::AlignCenter);
+	layout->addWidget(label);
+	const auto size = dimensions.scaled(QSize(1000, 700), Qt::KeepAspectRatio);
+	if (reader.supportsAnimation()) {
+		auto movie = new QMovie(reader.fileName(), QByteArray(), dialog);
+		movie->setScaledSize(size);
+		label->setMovie(movie);
+		movie->start();
+	} else {
+		reader.setScaledSize(size);
+		label->setPixmap(QPixmap::fromImage(reader.read()));
+	}
+	dialog->resize(size + QSize(24, 24));
+	dialog->show();
+}
+
+void SaveArchivedFile(QWidget *parent, const QString &source, QString name) {
+	name = QFileInfo(name).fileName();
+	if (name.isEmpty()) {
+		name = u"deleted-media"_q;
+	}
+	const auto destination = QFileDialog::getSaveFileName(
+		parent, u"Save retained file"_q, name);
+	const auto sourceFolder = QDir(QFileInfo(source).absolutePath())
+		.canonicalPath();
+	const auto targetFolder = QDir(QFileInfo(destination).absolutePath())
+		.canonicalPath();
+	if (destination.isEmpty()
+		|| sourceFolder.compare(targetFolder, Qt::CaseInsensitive) == 0) {
+		return;
+	}
+	crl::async([source, destination] {
+		auto input = QFile(source);
+		auto output = QSaveFile(destination);
+		if (!input.open(QIODevice::ReadOnly)
+			|| !output.open(QIODevice::WriteOnly)) {
+			return;
+		}
+		while (!input.atEnd()) {
+			const auto chunk = input.read(256 * 1024);
+			if (chunk.isEmpty() || output.write(chunk) != chunk.size()) {
+				output.cancelWriting();
+				return;
+			}
+		}
+		(void)output.commit();
+	});
+}
 
 [[nodiscard]] std::unique_ptr<TranslateTracker> MaybeTranslateTracker(
 		History *history) {
@@ -576,6 +663,28 @@ ListWidget::ListWidget(
 	setAttribute(Qt::WA_AcceptTouchEvents);
 	setMouseTracking(true);
 	setAccessibleName(tr::lng_sr_message_list(tr::now));
+	if (const auto scope = _delegate->listArchiveScope()) {
+		LOG(("ElitegramAntiDelete view_scope account=%1 peer=%2 topic=%3 enabled=%4")
+			.arg(session->uniqueId()).arg(scope->peer.value)
+			.arg(scope->topic.bare).arg(int(session->deletedMessages().enabled())));
+		session->deletedMessages().deletedChanges(
+		) | rpl::filter([=](const Elitegram::DeletedMessagesStore::Key &key) {
+			return key.peer == scope->peer.value
+				&& key.topic == scope->topic.bare;
+		}) | rpl::on_next([=] {
+			if (_archiveDiagnosticEventCount++ < 32) {
+				LOG(("ElitegramAntiDelete view_changed account=%1 peer=%2 topic=%3")
+					.arg(session->uniqueId()).arg(scope->peer.value)
+					.arg(scope->topic.bare));
+			}
+			// Let the stock deletion finish before rebuilding display-only rows.
+			QTimer::singleShot(0, this, [=] { refreshArchivedRows(); });
+		}, lifetime());
+		session->deletedMessages().enabledValue(
+		) | rpl::on_next([=](bool) {
+			QTimer::singleShot(0, this, [=] { refreshArchivedRows(); });
+		}, lifetime());
+	}
 	if (const auto scroll = _delegate->listScrollArea()) {
 		scroll->lockWheelDirection();
 		scroll->setCrossAxisWheelProcess([=](
@@ -898,6 +1007,7 @@ void ListWidget::refreshRows(const Data::MessagesSlice &old) {
 		}
 	}
 	updateAroundPositionFromNearest(nearestIndex);
+	rebuildArchivedRows();
 
 	updateItemsGeometry();
 
@@ -941,6 +1051,382 @@ void ListWidget::refreshRows(const Data::MessagesSlice &old) {
 	checkActivation();
 	checkAnnounceFirstMessages();
 	_delegate->listContentRefreshed();
+}
+
+Data::MessagePosition ListWidget::ArchivedRow::position() const {
+	return {
+		.fullId = FullMsgId(PeerId(record.key.peer), MsgId(record.key.message)),
+		.date = record.date,
+	};
+}
+
+int ListWidget::ArchivedRow::resizeGetHeight(int width) {
+	const auto bubbleWidth = std::max(1, std::min(st::msgMaxWidth, width - 32));
+	const auto textWidth = std::max(1, bubbleWidth - 24);
+	const auto metrics = QFontMetrics(st::msgFont->f);
+	const auto bodyHeight = record.text.isEmpty() ? 0 : std::max(
+		metrics.height(), metrics.boundingRect(
+			QRect(0, 0, textWidth, 100000),
+			Qt::TextWordWrap, record.text).height()) + 4;
+	const auto mediaHeight = album.size() >= 2
+		? int((album.size() + 1) / 2) * 112
+		: preview.isNull() ? 68
+		: std::clamp(textWidth * preview.height()
+			/ std::max(1, preview.width()), 100, 280) + 6;
+	height = 8
+		+ (sender.isEmpty() || outgoing ? 0 : st::msgNameFont->height + 4)
+		+ (record.replyMessage ? 24 : 0)
+		+ (record.mediaKind ? mediaHeight : 0)
+		+ bodyHeight
+		+ (reactionsPreview.isEmpty() ? 0 : st::msgDateFont->height + 4)
+		+ st::msgDateFont->height + 8
+		+ (groupedWithNext ? 2 : 6);
+	return height;
+}
+
+void ListWidget::ArchivedRow::paint(
+		Painter &p,
+		int width,
+		const Ui::ChatStyle *style) const {
+	const auto bubbleWidth = std::max(1, std::min(st::msgMaxWidth, width - 32));
+	const auto x = outgoing
+		? std::max(8, width - bubbleWidth - 8)
+		: std::min(48, std::max(8, width - bubbleWidth - 8));
+	const auto bubble = QRect(x, y, bubbleWidth,
+		height - (groupedWithNext ? 2 : 6));
+	const auto textWidth = std::max(1, bubbleWidth - 24);
+	p.setPen(Qt::NoPen);
+	p.setBrush(outgoing ? style->msgOutBg() : style->msgInBg());
+	p.drawRoundedRect(bubble, 12, 12);
+	auto textY = y + 8;
+	const auto foreground = outgoing
+		? style->historyTextOutFg() : style->historyTextInFg();
+	if (!sender.isEmpty() && !outgoing) {
+		p.setFont(st::msgNameFont);
+		p.setPen(foreground);
+		p.drawText(QRect(x + 12, textY, textWidth,
+			st::msgNameFont->height), Qt::AlignLeft, sender);
+		textY += st::msgNameFont->height + 4;
+	}
+	if (record.replyMessage) {
+		p.setFont(st::msgDateFont);
+		p.setPen(foreground);
+		p.drawText(QRect(x + 12, textY, textWidth, 20),
+			Qt::AlignLeft | Qt::AlignVCenter,
+			replyPreview.isEmpty() ? u"Reply to message"_q : replyPreview);
+		textY += 24;
+	}
+	if (record.mediaKind) {
+		const auto mediaHeight = album.size() >= 2
+			? int((album.size() + 1) / 2) * 112 - 6
+			: preview.isNull() ? 62
+			: std::clamp(textWidth * preview.height()
+				/ std::max(1, preview.width()), 100, 280);
+		const auto area = QRect(x + 12, textY, textWidth, mediaHeight);
+		if (album.size() >= 2) {
+			const auto tileWidth = std::max(1, (textWidth - 4) / 2);
+			for (auto n = size_t(); n != album.size(); ++n) {
+				const auto tile = QRect(
+					area.x() + int(n % 2) * (tileWidth + 4),
+					area.y() + int(n / 2) * 112,
+						tileWidth, 106);
+				if (!album[n].preview.isNull()) {
+					const auto scaled = album[n].preview.size().scaled(
+						tile.size(), Qt::KeepAspectRatio);
+					p.drawImage(QRect(tile.topLeft(), scaled), album[n].preview);
+				} else {
+					p.setFont(st::msgDateFont);
+					p.setPen(foreground);
+					p.drawText(tile, Qt::AlignCenter | Qt::TextWordWrap,
+						album[n].record.localMediaPath.isEmpty()
+							? u"Unavailable locally"_q
+							: album[n].record.fileName.isEmpty()
+							? u"Media"_q : album[n].record.fileName);
+				}
+			}
+		} else if (!preview.isNull()) {
+			const auto imageSize = preview.size().scaled(
+				area.size(), Qt::KeepAspectRatio);
+			p.drawImage(QRect(area.topLeft(), imageSize), preview);
+		} else {
+			const auto kind = record.mediaSubtype == 1 ? u"Photo"_q
+				: record.mediaSubtype == 2 ? u"Video"_q
+				: record.mediaSubtype == 4 ? u"Voice message"_q
+				: record.mediaSubtype == 5 ? u"Audio"_q
+				: record.mediaSubtype == 6 ? u"Animation"_q
+				: record.mediaSubtype == 7 ? u"Sticker"_q
+				: u"File"_q;
+			p.setFont(st::msgFont);
+			p.setPen(foreground);
+			p.drawText(area.adjusted(0, 0, 0, -20),
+				Qt::AlignLeft | Qt::AlignVCenter,
+				record.fileName.isEmpty() ? kind : record.fileName);
+			auto detail = record.duration > 0
+				? QString::number(record.duration / 60000)
+					+ u":"_q
+					+ QString::number((record.duration / 1000) % 60)
+						.rightJustified(2, QChar('0'))
+				: record.mediaSize > 0
+				? QString::number(record.mediaSize / 1024) + u" KB"_q
+				: QString();
+			if (record.localMediaPath.isEmpty()) {
+				detail = detail.isEmpty()
+					? u"Unavailable locally"_q
+					: detail + u" · Unavailable locally"_q;
+			}
+			p.setFont(st::msgDateFont);
+			p.drawText(area.adjusted(0, 30, 0, 0),
+				Qt::AlignLeft | Qt::AlignVCenter, detail);
+		}
+		textY += mediaHeight + 6;
+	}
+	p.setFont(st::msgFont);
+	p.setPen(foreground);
+	if (!record.text.isEmpty()) {
+		const auto bodyHeight = bubble.bottom() - textY
+			- st::msgDateFont->height - 8
+			- (reactionsPreview.isEmpty() ? 0 : st::msgDateFont->height + 4);
+		p.drawText(QRect(x + 12, textY, textWidth, bodyHeight),
+			Qt::TextWordWrap | Qt::AlignLeft, record.text);
+	}
+	if (!reactionsPreview.isEmpty()) {
+		p.setFont(st::msgDateFont);
+		p.drawText(QRect(x + 12,
+			bubble.bottom() - 10 - 2 * st::msgDateFont->height,
+			textWidth, st::msgDateFont->height),
+			Qt::AlignLeft, reactionsPreview);
+	}
+	p.setFont(st::msgDateFont);
+	p.setPen(outgoing ? style->msgOutDateFg() : style->msgInDateFg());
+	p.drawText(QRect(x + 12,
+		bubble.bottom() - 7 - st::msgDateFont->height,
+		textWidth, st::msgDateFont->height),
+		Qt::AlignRight,
+		(record.edited ? u"Edited \u00b7 "_q : QString())
+			+ u"Deleted \u00b7 "_q
+			+ QDateTime::fromSecsSinceEpoch(record.date).toString(u"hh:mm"_q));
+}
+
+const Elitegram::DeletedMessagesStore::Record *
+ListWidget::ArchivedRow::recordAt(QPoint point, int width, int top) const {
+	if (album.size() < 2) {
+		return &record;
+	}
+	const auto bubbleWidth = std::max(1, std::min(st::msgMaxWidth, width - 32));
+	const auto x = outgoing
+		? std::max(8, width - bubbleWidth - 8)
+		: std::min(48, std::max(8, width - bubbleWidth - 8));
+	const auto mediaTop = top + 8
+		+ (sender.isEmpty() || outgoing ? 0 : st::msgNameFont->height + 4)
+		+ (record.replyMessage ? 24 : 0);
+	const auto textWidth = std::max(1, bubbleWidth - 24);
+	const auto tileWidth = std::max(1, (textWidth - 4) / 2);
+	const auto column = (point.x() >= x + 12 + tileWidth + 4) ? 1 : 0;
+	const auto index = (point.y() - mediaTop) / 112 * 2 + column;
+	return (point.y() >= mediaTop && point.x() >= x + 12
+		&& point.x() < x + 12 + textWidth
+		&& index >= 0 && index < int(album.size()))
+		? &album[index].record : &record;
+}
+
+void ListWidget::rebuildArchivedRows() {
+	_archivedRows.clear();
+	const auto scope = _delegate->listArchiveScope();
+	if (!scope || _inverted) {
+		return;
+	}
+	const auto records = session().deletedMessages().deletedFor(
+		scope->peer, scope->topic);
+	auto mediaRows = 0;
+	auto suppressedLive = 0;
+	auto outsideRange = 0;
+	const auto fullyLoaded = ((_slice.skippedBefore == 0)
+		&& (_slice.skippedAfter == 0))
+		|| (_slice.fullCount == 0);
+	for (const auto &record : records) {
+		if (record.mediaKind == 0 && record.text.isEmpty()) {
+			continue;
+		}
+		const auto id = FullMsgId(
+			PeerId(record.key.peer), MsgId(record.key.message));
+		const auto wasInSlice = ranges::contains(_slice.ids, id);
+		if (session().data().message(id)) {
+			++suppressedLive;
+			continue; // A live server-backed item still owns this position.
+		}
+		if (_items.empty() && !fullyLoaded && !wasInSlice) {
+			++outsideRange;
+			continue;
+		}
+		auto row = ArchivedRow{ .record = record };
+		row.outgoing = (record.sender == session().userPeerId().value);
+		for (const auto &reaction : record.reactions) {
+			const auto label = reaction.emoji.isEmpty()
+				? (reaction.customId ? u"Custom reaction"_q : u"Reaction"_q)
+				: reaction.emoji;
+			if (!row.reactionsPreview.isEmpty()) {
+				row.reactionsPreview += u"  "_q;
+			}
+			row.reactionsPreview += label + u" "_q
+				+ QString::number(reaction.count);
+		}
+		if (record.replyMessage > 0
+			&& (!record.replyPeer || record.replyPeer == record.key.peer)) {
+			const auto replyId = FullMsgId(PeerId(record.key.peer),
+				MsgId(record.replyMessage));
+			if (const auto live = session().data().message(replyId)) {
+				row.replyPreview = live->originalText().text.simplified().left(80);
+			} else if (const auto archived = session().deletedMessages().findDeleted(
+					PeerId(record.key.peer), MsgId(), MsgId(record.replyMessage))) {
+				row.replyPreview = archived->text.simplified().left(80);
+			}
+		}
+		if (row.replyPreview.isEmpty()) {
+			row.replyPreview = record.replyPreview.left(80);
+		}
+		if (record.mediaKind && !record.localMediaPath.isEmpty()) {
+			const auto previewPath = record.localMediaPath + u".thumb.png"_q;
+			if (QFileInfo(previewPath).isFile()) {
+				row.preview = QImageReader(previewPath).read();
+			}
+		}
+		const auto position = row.position();
+		if (!_items.empty()) {
+			const auto first = _items.front()->data()->position();
+			const auto last = _items.back()->data()->position();
+			if (!wasInSlice
+				&& ((position < first && _slice.skippedBefore != 0)
+					|| (position > last && _slice.skippedAfter != 0))) {
+				++outsideRange;
+				continue;
+			}
+		}
+		if (const auto peer = session().data().peerLoaded(PeerId(record.sender))) {
+			row.sender = peer->name();
+		}
+		mediaRows += (record.mediaKind != 0);
+		_archivedRows.push_back(std::move(row));
+	}
+	std::sort(_archivedRows.begin(), _archivedRows.end(),
+		[](const ArchivedRow &a, const ArchivedRow &b) {
+			return a.position() < b.position();
+		});
+	// Collapse only adjacent deleted members of one private-DM album. A live
+	// item between them keeps its own chronological position and prevents a
+	// synthetic server album from being formed.
+	auto grouped = std::vector<ArchivedRow>();
+	for (auto &row : _archivedRows) {
+		const auto canJoin = [&] {
+			if (grouped.empty()) {
+				return false;
+			}
+			const auto &previous = grouped.back();
+			if (!row.record.group || !row.record.mediaKind
+				|| !previous.record.mediaKind
+				|| previous.record.group != row.record.group
+				|| previous.record.sender != row.record.sender
+				|| previous.album.size() >= 10) {
+				return false;
+			}
+			return !ranges::any_of(_items, [&](const auto &view) {
+				const auto position = view->data()->position();
+				return position > previous.position()
+					&& position < row.position();
+			});
+		}();
+		if (!canJoin) {
+			grouped.push_back(std::move(row));
+			continue;
+		}
+		auto &previous = grouped.back();
+		if (previous.album.empty()) {
+			previous.album.push_back({ previous.record, previous.preview });
+		}
+		previous.album.push_back({ row.record, row.preview });
+		if (!row.record.text.isEmpty()) {
+			if (!previous.record.text.isEmpty()) {
+				previous.record.text += QChar('\n');
+			}
+			previous.record.text += row.record.text;
+		}
+	}
+	_archivedRows = std::move(grouped);
+	for (auto i = size_t(1); i < _archivedRows.size(); ++i) {
+		auto &previous = _archivedRows[i - 1];
+		const auto &next = _archivedRows[i];
+		previous.groupedWithNext = previous.record.group
+			&& previous.record.group == next.record.group
+			&& previous.record.sender == next.record.sender;
+	}
+	if (_archiveDiagnosticBuildCount++ < 32) {
+		LOG(("ElitegramAntiDelete rows account=%1 peer=%2 topic=%3 queried=%4 built=%5 media=%6 live=%7 range=%8 slice=%9")
+			.arg(session().uniqueId()).arg(scope->peer.value)
+			.arg(scope->topic.bare).arg(int(records.size()))
+			.arg(int(_archivedRows.size())).arg(mediaRows)
+			.arg(suppressedLive).arg(outsideRange)
+			.arg(int(_slice.ids.size())));
+		if (mediaRows) {
+			LOG(("ElitegramAntiDelete media_render account=%1 peer=%2 rows=%3")
+				.arg(session().uniqueId()).arg(scope->peer.value)
+				.arg(mediaRows));
+		}
+	}
+}
+
+void ListWidget::refreshArchivedRows() {
+	saveScrollState();
+	rebuildArchivedRows();
+	updateSize();
+	restoreScrollState();
+	update();
+}
+
+const ListWidget::ArchivedRow *ListWidget::archivedRowAt(
+		int y, int *rowTop) const {
+	for (const auto &row : _archivedRows) {
+		const auto baseTop = _itemsTop + row.y;
+		auto shift = 0;
+		for (const auto &gap : collapseGaps()) {
+			if (baseTop >= gap.absY) {
+				shift += gap.height;
+			}
+		}
+		const auto top = baseTop + shift;
+		if (y >= top && y < top + row.height) {
+			if (rowTop) {
+				*rowTop = top;
+			}
+			return &row;
+		}
+	}
+	return nullptr;
+}
+
+void ListWidget::paintArchivedRows(Painter &p, QRect clip) const {
+	const auto style = _delegate->listChatStyle();
+	auto painted = 0;
+	for (const auto &row : _archivedRows) {
+		const auto baseTop = _itemsTop + row.y;
+		auto shift = 0;
+		for (const auto &gap : collapseGaps()) {
+			if (baseTop >= gap.absY) {
+				shift += gap.height;
+			}
+		}
+		const auto top = baseTop + shift;
+		if (top + row.height <= clip.top() || top >= clip.bottom() + 1) {
+			continue;
+		}
+		p.save();
+		p.translate(0, top - row.y);
+		row.paint(p, width(), style.get());
+		++painted;
+		p.restore();
+	}
+	if (painted && _archiveDiagnosticPaintCount++ < 8) {
+		LOG(("ElitegramAntiDelete paint account=%1 count=%2")
+			.arg(session().uniqueId()).arg(painted));
+	}
 }
 
 void ListWidget::rememberScrollAnchor() {
@@ -2839,22 +3325,45 @@ int ListWidget::resizeGetHeight(int newWidth) {
 
 	const auto resizeAllItems = (_itemsWidth != newWidth);
 	auto newHeight = 0;
+	auto liveHeight = 0;
+	auto archive = begin(_archivedRows);
+	const auto appendArchive = [&] {
+		archive->y = newHeight;
+		newHeight += archive->resizeGetHeight(newWidth);
+		++archive;
+	};
 	for (const auto &view : _items) {
+		while (archive != end(_archivedRows)
+			&& archive->position() < view->data()->position()) {
+			appendArchive();
+		}
 		view->setY(newHeight);
 		if (view->pendingResize() || resizeAllItems) {
-			newHeight += view->resizeGetHeight(newWidth);
+			const auto height = view->resizeGetHeight(newWidth);
+			newHeight += height;
+			liveHeight += height;
 		} else {
 			newHeight += view->height();
+			liveHeight += view->height();
 		}
 	}
-	if (newHeight > 0) {
+	while (archive != end(_archivedRows)) {
+		appendArchive();
+	}
+	if (!_items.empty()) {
 		_itemAverageHeight = std::max(
 			itemMinimalHeight(),
-			newHeight / int(_items.size()));
+			liveHeight / int(_items.size()));
 	}
 	startItemRevealAnimations();
 	_itemsWidth = newWidth;
 	_itemsHeight = newHeight - _itemsRevealHeight;
+	if (_delegate->listArchiveScope()
+		&& _archiveDiagnosticGeometryCount++ < 16) {
+		LOG(("ElitegramAntiDelete geometry account=%1 rows=%2 height=%3")
+			.arg(session().uniqueId()).arg(int(_archivedRows.size()))
+			.arg(_itemsHeight));
+	}
 	if (_thanosController) {
 		_thanosController->flushRemovals(_itemsHeight);
 	}
@@ -3096,8 +3605,11 @@ void ListWidget::paintEvent(QPaintEvent *e) {
 		p.translate(0, -top);
 	};
 	drawAboutView();
+	paintArchivedRows(p, clip);
 	if (from == end(_items)) {
-		_delegate->listPaintEmpty(p, context);
+		if (_archivedRows.empty()) {
+			_delegate->listPaintEmpty(p, context);
+		}
 		return;
 	}
 	if (_reactionsManager) {
@@ -3120,6 +3632,14 @@ void ListWidget::paintEvent(QPaintEvent *e) {
 	p.translate(0, top);
 	const auto sendingAnimation = _delegate->listSendingAnimation();
 	for (auto i = from; i != to; ++i) {
+		const auto view = *i;
+		const auto nextTop = itemTop(view) + collapseShift;
+		if (nextTop > top) {
+			const auto skipped = nextTop - top;
+			top += skipped;
+			context.translate(0, -skipped);
+			p.translate(0, skipped);
+		}
 		while (nextGapIndex < int(collapseGaps().size())) {
 			const auto &gap = collapseGaps()[nextGapIndex];
 			if (top - collapseShift < gap.absY) break;
@@ -3130,7 +3650,6 @@ void ListWidget::paintEvent(QPaintEvent *e) {
 			++nextGapIndex;
 		}
 
-		const auto view = *i;
 		const auto item = view->data();
 		const auto height = view->height();
 		if (!sendingAnimation
@@ -3646,7 +4165,7 @@ not_null<Element*> ListWidget::findItemByY(int y) const {
 }
 
 Element *ListWidget::strictFindItemByY(int y) const {
-	if (_items.empty()) {
+	if (_items.empty() || archivedRowAt(y)) {
 		return nullptr;
 	}
 	auto gapTotal = 0;
@@ -3914,6 +4433,10 @@ auto ListWidget::scrollKeyEvents() const
 }
 
 void ListWidget::mouseDoubleClickEvent(QMouseEvent *e) {
+	if (archivedRowAt(e->pos().y())) {
+		e->accept();
+		return;
+	}
 	registerReadMetricsActivity();
 	mouseActionStart(e->globalPos(), e->button());
 	trySwitchToWordSelection();
@@ -4004,6 +4527,55 @@ void ListWidget::validateTrippleClickStartTime() {
 }
 
 void ListWidget::contextMenuEvent(QContextMenuEvent *e) {
+	auto rowTop = 0;
+	if (const auto row = archivedRowAt(e->pos().y(), &rowTop)) {
+		const auto record = row->recordAt(e->pos(), width(), rowTop);
+		const auto path = record->localMediaPath;
+		const auto name = !record->originalFileName.isEmpty()
+			? record->originalFileName : record->fileName;
+		const auto subtype = record->mediaSubtype;
+		auto menu = QMenu(this);
+		if (!path.isEmpty() && QFileInfo(path).isFile()
+			&& !QFileInfo(path).isSymLink()) {
+			if (subtype == 1 || subtype == 6 || subtype == 7) {
+				menu.addAction(u"View local copy"_q, this, [=] {
+					ShowArchivedImage(this, path);
+				});
+			} else if (subtype != 3) {
+				menu.addAction(u"Open local copy"_q, this, [=] {
+					QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+				});
+			} else {
+				const auto suffix = QFileInfo(name).suffix().toLower();
+				if (!QStringList{ u"exe"_q, u"com"_q, u"bat"_q,
+					u"cmd"_q, u"ps1"_q, u"msi"_q, u"scr"_q,
+					u"lnk"_q }.contains(suffix)) {
+					menu.addAction(u"Open local copy"_q, this, [=] {
+						QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+					});
+				}
+			}
+			menu.addAction(u"Show in Folder"_q, this, [=] {
+				File::ShowInFolder(path);
+			});
+			menu.addAction(u"Save As…"_q, this, [=] {
+				const auto savedName = QFileInfo(name).suffix().isEmpty()
+					? u"deleted-media."_q + QFileInfo(path).suffix() : name;
+				SaveArchivedFile(this, path, savedName);
+			});
+		}
+		if (!record->text.isEmpty()) {
+			const auto text = record->text;
+			menu.addAction(u"Copy Text"_q, this, [=] {
+				QApplication::clipboard()->setText(text);
+			});
+		}
+		if (!menu.actions().isEmpty()) {
+			menu.exec(e->globalPos());
+		}
+		e->accept();
+		return;
+	}
 	showContextMenu(e);
 }
 
@@ -4225,6 +4797,30 @@ void ListWidget::reactionChosen(ChosenReaction reaction) {
 }
 
 void ListWidget::mousePressEvent(QMouseEvent *e) {
+	auto rowTop = 0;
+	if (const auto row = archivedRowAt(e->pos().y(), &rowTop);
+		row && e->button() != Qt::MiddleButton) {
+		const auto record = row->recordAt(e->pos(), width(), rowTop);
+		if (e->button() == Qt::LeftButton
+			&& !record->localMediaPath.isEmpty()
+			&& QFileInfo(record->localMediaPath).isFile()
+			&& !QFileInfo(record->localMediaPath).isSymLink()) {
+			const auto subtype = record->mediaSubtype;
+			if (subtype == 1 || subtype == 6 || subtype == 7) {
+				ShowArchivedImage(this, record->localMediaPath);
+			} else if (subtype == 3) {
+				auto menu = QContextMenuEvent(
+					QContextMenuEvent::Other, e->pos(), e->globalPos());
+				contextMenuEvent(&menu);
+			} else {
+				QDesktopServices::openUrl(
+					QUrl::fromLocalFile(record->localMediaPath));
+			}
+		}
+		mouseActionCancel();
+		e->accept();
+		return;
+	}
 	if (_menu) {
 		e->accept();
 		return; // ignore mouse press, that was hiding context menu
@@ -4501,6 +5097,11 @@ void ListWidget::mouseMoveEvent(QMouseEvent *e) {
 }
 
 void ListWidget::mouseReleaseEvent(QMouseEvent *e) {
+	if (archivedRowAt(e->pos().y()) && e->button() != Qt::MiddleButton) {
+		mouseActionCancel();
+		e->accept();
+		return;
+	}
 	if (_middleClickAutoscroll.finishHold(e->button())) {
 		e->accept();
 		return;
@@ -5689,6 +6290,10 @@ void ListWidget::refreshAttachmentsFromTill(int from, int till) {
 }
 
 void ListWidget::viewHeightAdjusted(not_null<Element*> view) {
+	if (!_archivedRows.empty()) {
+		updateSize();
+		return;
+	}
 	const auto i = ranges::find(_items, view);
 	if (i == end(_items)) {
 		return;

@@ -1476,7 +1476,12 @@ void MainWidget::showHistory(
 		_controller->window().activate();
 	}
 
-	if (peerId && OptionUseNewChatView.value()) {
+	// The private-DM deleted-message rows are owned by HistoryView::ListWidget.
+	// The default HistoryInner has no archive projection or subscription.
+	const auto useArchiveChatView = peerId && peerId.is<UserId>()
+		&& peerId != session().userPeerId()
+		&& session().deletedMessages().enabled();
+	if (peerId && (OptionUseNewChatView.value() || useArchiveChatView)) {
 		const auto history = session().data().history(peerId);
 		if (showAtMsgId == ShowAndStartBotMsgId) {
 			if (const auto user = history->peer->asUser()) {

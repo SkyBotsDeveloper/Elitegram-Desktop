@@ -23,8 +23,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_inner_widget_accessibility.h"
 #include "history/history_view_highlight_manager.h"
 #include "history/history_view_top_toast.h"
+#include "elitegram/elitegram_deleted_messages.h"
+#include <QtGui/QImage>
 
 struct ClickHandlerContext;
+class Painter;
 
 namespace Main {
 class Session;
@@ -34,6 +37,7 @@ namespace Ui {
 class Show;
 class PopupMenu;
 class ChatTheme;
+class ChatStyle;
 class ElasticScroll;
 struct ChatPaintContext;
 struct ChatPaintContextArgs;
@@ -120,6 +124,13 @@ using SelectedItems = std::vector<SelectedItem>;
 
 class ListDelegate {
 public:
+	struct ArchiveScope {
+		PeerId peer;
+		MsgId topic;
+	};
+	virtual std::optional<ArchiveScope> listArchiveScope() const {
+		return std::nullopt;
+	}
 	virtual Context listContext() = 0;
 	virtual bool listScrollTo(int top, bool syntetic = true) = 0;
 	virtual void listCancelRequest() = 0;
@@ -603,6 +614,32 @@ protected:
 	int resizeGetHeight(int newWidth) override;
 
 private:
+	struct ArchivedRow {
+		struct AlbumMember {
+			Elitegram::DeletedMessagesStore::Record record;
+			QImage preview;
+		};
+		Elitegram::DeletedMessagesStore::Record record;
+		QString sender;
+		QString replyPreview;
+		QString reactionsPreview;
+		QImage preview;
+		std::vector<AlbumMember> album;
+		bool outgoing = false;
+		bool groupedWithNext = false;
+		int y = 0;
+		int height = 0;
+		[[nodiscard]] Data::MessagePosition position() const;
+		[[nodiscard]] int resizeGetHeight(int width);
+		void paint(Painter &p, int width, const Ui::ChatStyle *style) const;
+		[[nodiscard]] const Elitegram::DeletedMessagesStore::Record *
+			recordAt(QPoint point, int width, int top) const;
+	};
+	void rebuildArchivedRows();
+	void refreshArchivedRows();
+	[[nodiscard]] const ArchivedRow *archivedRowAt(
+		int y, int *top = nullptr) const;
+	void paintArchivedRows(Painter &p, QRect clip) const;
 	[[nodiscard]] static int SelectionViewOffset(
 		not_null<const ListWidget*> inner,
 		not_null<const Element*> view);
@@ -949,6 +986,11 @@ private:
 	bool _itemsKnownTillEnd = false;
 
 	std::vector<not_null<Element*>> _items;
+	std::vector<ArchivedRow> _archivedRows;
+	int _archiveDiagnosticBuildCount = 0;
+	int _archiveDiagnosticEventCount = 0;
+	int _archiveDiagnosticGeometryCount = 0;
+	mutable int _archiveDiagnosticPaintCount = 0;
 	ViewsMap _views, _viewsCapacity;
 	int _itemsTop = 0;
 	int _itemsWidth = 0;

@@ -222,6 +222,9 @@ public:
 
 	static constexpr auto kServiceNotificationsId = peerFromUser(777000);
 	static constexpr auto kSavedHiddenAuthorId = peerFromUser(2666000);
+	[[nodiscard]] bool isElitegramServicePeer() const {
+		return id == kServiceNotificationsId;
+	}
 
 	[[nodiscard]] Data::Session &owner() const;
 	[[nodiscard]] Main::Session &session() const;

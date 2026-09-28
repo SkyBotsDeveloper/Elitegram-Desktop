@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "webrtc/webrtc_device_resolver.h"
 
 class History;
+namespace Elitegram { class OutgoingAudio; }
 
 namespace tgcalls {
 class GroupInstanceCustomImpl;
@@ -329,6 +330,9 @@ public:
 
 	void setMuted(MuteState mute);
 	void setMutedAndUpdate(MuteState mute);
+	[[nodiscard]] std::shared_ptr<Elitegram::OutgoingAudio> outgoingAudio() const {
+		return _outgoingAudio;
+	}
 	[[nodiscard]] MuteState muted() const {
 		return _muted.current();
 	}
@@ -509,6 +513,12 @@ private:
 		CameraPaused  = 0x08,
 		ScreenPaused  = 0x10,
 	};
+	enum class MuteUpdateReason {
+		Local,
+		Initial,
+		EnableNoMicBlink,
+		Reconcile,
+	};
 	enum class JoinAction {
 		None,
 		Joining,
@@ -587,8 +597,20 @@ private:
 
 	void setState(State state);
 	void finish(FinishType type);
-	void maybeSendMutedUpdate(MuteState previous);
-	void sendSelfUpdate(SendUpdateType type);
+	void maybeSendMutedUpdate(
+		MuteState previous,
+		MuteUpdateReason reason = MuteUpdateReason::Local);
+	void sendSelfUpdate(
+		SendUpdateType type,
+		MuteUpdateReason reason = MuteUpdateReason::Local,
+		bool fromPending = false);
+	bool dropPendingMuteUpdateForNoMicBlink();
+	[[nodiscard]] bool effectiveMediaMuted() const;
+	[[nodiscard]] bool noMicBlinkCanTransmit() const;
+	void refreshMediaMute();
+	void prepareNoMicBlink();
+	void noMicBlinkChanged(bool enabled);
+	void reconcileNoMicBlinkOff();
 	void updateInstanceMuteState();
 	void updateInstanceVolumes();
 	void updateInstanceVolume(
@@ -728,6 +750,15 @@ private:
 	rpl::variable<bool> _messagesEnabled = false;
 	bool _initialMuteStateSent = false;
 	bool _systemMuteReconciled = false;
+	bool _serverSelfKnown = false;
+	bool _serverSelfMuted = false;
+	bool _serverSelfCanUnmute = false;
+	bool _noMicBlinkPermissionRequested = false;
+	bool _noMicBlinkPermissionGranted = false;
+	bool _noMicBlinkMuteRequested = false;
+	bool _noMicBlinkReconcilePending = false;
+	bool _mediaDevicesReady = false;
+	std::optional<bool> _lastEffectiveMediaMute;
 	bool _acceptFields = false;
 
 	rpl::event_stream<Group::ParticipantState> _otherParticipantStateValue;
@@ -749,6 +780,7 @@ private:
 	bool _instanceTransitioning = false;
 	InstanceMode _instanceMode = InstanceMode::None;
 	std::unique_ptr<tgcalls::GroupInstanceCustomImpl> _instance;
+	std::shared_ptr<Elitegram::OutgoingAudio> _outgoingAudio;
 	base::has_weak_ptr _instanceGuard;
 	std::shared_ptr<tgcalls::VideoCaptureInterface> _cameraCapture;
 	rpl::variable<Webrtc::VideoState> _cameraState;
@@ -767,6 +799,7 @@ private:
 	bool _screenWithAudio = false;
 
 	base::flags<SendUpdateType> _pendingSelfUpdates;
+	MuteUpdateReason _pendingMuteReason = MuteUpdateReason::Local;
 	bool _requireARGB32 = true;
 
 	rpl::event_stream<LevelUpdate> _levelUpdates;

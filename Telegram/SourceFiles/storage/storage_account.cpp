@@ -48,6 +48,8 @@ namespace {
 using namespace details;
 using Database = Cache::Database;
 
+const auto kElitegramDeletedMessagesFile = u"elitegram_deleted_v1"_q;
+
 constexpr auto kDelayedWriteTimeout = crl::time(1000);
 constexpr auto kWriteSearchSuggestionsDelay = 5 * crl::time(1000);
 constexpr auto kMaxSavedPlaybackPositions = 256;
@@ -1008,6 +1010,41 @@ void Account::updateDownloads(
 
 QByteArray Account::downloadsSerialized() const {
 	return _downloadsSerialized;
+}
+
+QByteArray Account::readElitegramDeletedMessages() const {
+	if (!_localKey) {
+		return {};
+	}
+	FileReadDescriptor file;
+	if (!ReadEncryptedFile(
+			file,
+			kElitegramDeletedMessagesFile,
+			_basePath,
+			_localKey)) {
+		return {};
+	}
+	auto result = QByteArray();
+	file.stream >> result;
+	return (file.stream.status() == QDataStream::Ok && file.stream.atEnd())
+		? result
+		: QByteArray();
+}
+
+void Account::writeElitegramDeletedMessages(
+		const QByteArray &bytes,
+		bool sync) {
+	if (!_localKey) {
+		return;
+	}
+	EncryptedDescriptor data(sizeof(quint32) + bytes.size());
+	data.stream << bytes;
+	FileWriteDescriptor file(kElitegramDeletedMessagesFile, _basePath, sync);
+	file.writeEncrypted(data, _localKey);
+}
+
+QString Account::elitegramDeletedMediaPath() const {
+	return _basePath + u"elitegram_deleted_media/"_q;
 }
 
 void Account::writeSessionSettings() {

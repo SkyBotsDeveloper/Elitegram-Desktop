@@ -84,6 +84,9 @@ public:
 	}
 
 	void writeSessionSettings();
+	[[nodiscard]] QByteArray readElitegramDeletedMessages() const;
+	void writeElitegramDeletedMessages(const QByteArray &data, bool sync);
+	[[nodiscard]] QString elitegramDeletedMediaPath() const;
 	void writeMtpData();
 	void writeMtpConfig();
 

@@ -39,7 +39,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/click_handler_types.h"
 #include "window/notifications_manager.h"
 #include "window/window_session_controller.h"
-#include "window/main_window.h" // Window::LogoNoMargin.
+#include "window/main_window.h" // Window::Logo, Window::LogoNoMargin.
 #include "ui/image/image.h"
 #include "ui/chat/chat_style.h"
 #include "ui/empty_userpic.h"
@@ -428,6 +428,12 @@ void PeerData::setUserpicPhoto(const MTPPhoto &data) {
 }
 
 QImage *PeerData::userpicCloudImage(Ui::PeerUserpicView &view) const {
+	if (isElitegramServicePeer()) {
+		static auto result = Window::Logo().scaledToWidth(
+			kUserpicSize,
+			Qt::SmoothTransformation);
+		return &result;
+	}
 	if (!_userpic.isCurrentView(view.cloud)) {
 		if (!_userpic.empty()) {
 			view.cloud = _userpic.createView();
@@ -501,6 +507,9 @@ bool PeerData::useEmptyUserpic(Ui::PeerUserpicView &view) const {
 }
 
 InMemoryKey PeerData::userpicUniqueKey(Ui::PeerUserpicView &view) const {
+	if (isElitegramServicePeer()) {
+		return { ~uint64(0), id.value };
+	}
 	if (const auto broadcast = monoforumBroadcast()) {
 		return broadcast->userpicUniqueKey(view);
 	}
@@ -1316,6 +1325,9 @@ ChannelData *PeerData::broadcastMonoforum() const {
 }
 
 const QString &PeerData::topBarNameText() const {
+	if (isElitegramServicePeer()) {
+		return name();
+	}
 	if (const auto to = migrateTo()) {
 		return to->topBarNameText();
 	} else if (const auto user = asUser()) {
@@ -1331,6 +1343,10 @@ int PeerData::nameVersion() const {
 }
 
 const QString &PeerData::name() const {
+	if (isElitegramServicePeer()) {
+		static const auto result = u"Elitegram"_q;
+		return result;
+	}
 	if (const auto to = migrateTo()) {
 		return to->name();
 	} else if (const auto broadcast = monoforumBroadcast()) {
@@ -1340,6 +1356,9 @@ const QString &PeerData::name() const {
 }
 
 const QString &PeerData::shortName() const {
+	if (isElitegramServicePeer()) {
+		return name();
+	}
 	if (const auto user = asUser()) {
 		return user->firstName.isEmpty() ? user->lastName : user->firstName;
 	} else if (const auto to = migrateTo()) {

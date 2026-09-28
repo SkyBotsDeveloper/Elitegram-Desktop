@@ -29,6 +29,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/notifications_manager.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "elitegram/elitegram_deleted_messages.h"
 #include "history/history_item_components.h"
 #include "history/history_streamed_drafts.h"
 #include "history/view/media/history_view_media.h"
@@ -3054,6 +3055,7 @@ bool Session::updateExistingMessage(const MTPDmessage &data) {
 		return false;
 	}
 	existing->applySentMessage(data);
+	session().deletedMessages().snapshot(existing);
 	const auto result = (existing->mainView() != nullptr);
 	if (result) {
 		stickers().checkSavedGif(existing);
@@ -3084,6 +3086,7 @@ void Session::updateEditedMessage(const MTPMessage &data) {
 	}, [&](const auto &data) {
 		existing->applyEdition(HistoryMessageEdition(_session, data));
 	});
+	session().deletedMessages().snapshot(existing);
 }
 
 void Session::processMessages(
@@ -3344,6 +3347,15 @@ void Session::processMessagesDeleted(
 		const QVector<MTPint> &data) {
 	const auto list = messagesList(peerId);
 	const auto affected = historyLoaded(peerId);
+	for (const auto &messageId : data) {
+		const auto i = list ? list->find(messageId.v) : Messages::iterator();
+		HistoryItem *item = nullptr;
+		if (list && i != list->end()) {
+			item = i->second;
+		}
+		session().deletedMessages().promote(peerId, messageId.v, item);
+	}
+	session().deletedMessages().flushDeletes();
 	if (!list && !affected) {
 		return;
 	}
@@ -3377,12 +3389,18 @@ void Session::processNonChannelMessagesDeleted(const QVector<MTPint> &data) {
 	auto toDestroy = std::vector<not_null<HistoryItem*>>();
 	auto historiesToCheck = base::flat_set<not_null<History*>>();
 	for (const auto &messageId : data) {
-		if (const auto item = nonChannelMessage(messageId.v)) {
+		const auto item = nonChannelMessage(messageId.v);
+		session().deletedMessages().promote(
+			item ? item->history()->peer->id : PeerId(),
+			messageId.v,
+			item);
+		if (item) {
 			const auto history = item->history();
 			toDestroy.push_back(item);
 			historiesToCheck.emplace(history);
 		}
 	}
+	session().deletedMessages().flushDeletes();
 	if (!toDestroy.empty()) {
 		notifyItemsAboutToBeDestroyed(toDestroy);
 		for (const auto &item : toDestroy) {

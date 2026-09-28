@@ -6,6 +6,8 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_histories.h"
+#include "elitegram/elitegram_privacy.h"
+#include "elitegram/elitegram_deleted_messages.h"
 
 #include "api/api_text_entities.h"
 #include "data/business/data_shortcut_messages.h"
@@ -714,6 +716,12 @@ void Histories::sendReadRequests() {
 
 void Histories::sendReadRequest(not_null<History*> history, State &state) {
 	Expects(state.willReadTill > state.sentReadTill);
+	if (session().elitegramPrivacy().suppressReadAcknowledgements()) {
+		const auto tillId = base::take(state.willReadTill);
+		state.willReadWhen = 0;
+		session().elitegramPrivacy().deferRead(history, tillId);
+		return;
+	}
 
 	const auto tillId = state.sentReadTill = base::take(state.willReadTill);
 	state.willReadWhen = 0;
@@ -985,6 +993,12 @@ void Histories::deleteMessages(const MessageIdsList &ids, bool revoke) {
 				_owner->session().ephemeralMessages().deleteMessage(item);
 				continue;
 			}
+			if (revoke && item->isRegular()) {
+				// Snapshot and commit the local archive before stock deletion
+				// destroys this item. The normal server request below is unchanged.
+				_owner->session().deletedMessages().promote(
+					history->peer->id, itemId.msg, item, "local");
+			}
 			remove.push_back(item);
 			if (item->isRegular()) {
 				idsByPeer[history].push_back(MTP_int(itemId.msg));
@@ -992,6 +1006,9 @@ void Histories::deleteMessages(const MessageIdsList &ids, bool revoke) {
 		}
 	}
 
+	if (revoke) {
+		_owner->session().deletedMessages().flushDeletes();
+	}
 	for (const auto &[history, ids] : idsByPeer) {
 		history->owner().histories().deleteMessages(history, ids, revoke);
 	}
@@ -1159,6 +1176,7 @@ int Histories::sendPreparedMessage(
 					const MTP::Response &response) {
 				api->applyUpdates(result, randomId);
 				done(result, response);
+				session->elitegramPrivacy().releasePendingRead(history);
 				finish();
 			}).fail([=](
 					const MTP::Error &error,

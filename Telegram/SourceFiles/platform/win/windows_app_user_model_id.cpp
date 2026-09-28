@@ -26,9 +26,9 @@ const PROPERTYKEY pkey_AppUserModel_StartPinOption = { { 0x9F4C2855, 0x9F79, 0x4
 const PROPERTYKEY pkey_AppUserModel_ToastActivator = { { 0x9F4C2855, 0x9F79, 0x4B39, { 0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3 } }, 26 };
 
 #ifdef OS_WIN_STORE
-const WCHAR AppUserModelIdBase[] = L"Telegram.TelegramDesktop.Store";
+const WCHAR AppUserModelIdBase[] = L"Elitegram.ElitegramDesktop.Store";
 #else // OS_WIN_STORE
-const WCHAR AppUserModelIdBase[] = L"Telegram.TelegramDesktop";
+const WCHAR AppUserModelIdBase[] = L"Elitegram.ElitegramDesktop";
 #endif // OS_WIN_STORE
 
 [[nodiscard]] QString PinnedIconsPath() {
@@ -207,13 +207,12 @@ QString systemShortcutPath() {
 	return QString();
 }
 
-void CleanupShortcut() {
+void CleanupShortcutAt(const QString &path) {
 	const auto myid = MyExecutablePathId();
 	if (!myid) {
 		return;
 	}
 
-	QString path = systemShortcutPath() + u"Telegram.lnk"_q;
 	std::wstring p = QDir::toNativeSeparators(path).toStdWString();
 
 	DWORD attributes = GetFileAttributes(p.c_str());
@@ -240,6 +239,15 @@ void CleanupShortcut() {
 	if (GetUniqueFileId(szGotPath) == myid) {
 		QFile().remove(path);
 	}
+}
+
+void CleanupShortcut() {
+	const auto path = systemShortcutPath();
+	if (path.isEmpty()) {
+		return;
+	}
+	CleanupShortcutAt(path + u"Telegram.lnk"_q);
+	CleanupShortcutAt(path + u"Elitegram.lnk"_q);
 }
 
 bool validateShortcutAt(const QString &path) {
@@ -345,10 +353,7 @@ bool checkInstalled(QString path = {}) {
 		}
 	}
 
-	const auto installed = u"Telegram Desktop/Telegram.lnk"_q;
-	const auto old = u"Telegram Win (Unofficial)/Telegram.lnk"_q;
-	return validateShortcutAt(path + installed)
-		|| validateShortcutAt(path + old);
+	return validateShortcutAt(path + u"Elitegram Desktop/Elitegram.lnk"_q);
 }
 
 bool ValidateShortcut() {
@@ -356,9 +361,10 @@ bool ValidateShortcut() {
 	if (path.isEmpty() || cExeName().isEmpty()) {
 		return false;
 	}
+	CleanupShortcutAt(path + u"Telegram.lnk"_q);
 
 	if (cAlphaVersion()) {
-		path += u"TelegramAlpha.lnk"_q;
+		path += u"ElitegramAlpha.lnk"_q;
 		if (validateShortcutAt(path)) {
 			return true;
 		}
@@ -367,7 +373,7 @@ bool ValidateShortcut() {
 			return true;
 		}
 
-		path += u"Telegram.lnk"_q;
+		path += u"Elitegram.lnk"_q;
 		if (validateShortcutAt(path)) {
 			return true;
 		}

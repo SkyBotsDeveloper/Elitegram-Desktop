@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "calls/calls_panel.h"
+#include "elitegram/elitegram_outgoing_audio.h"
 
 #include "boxes/peers/replace_boost_box.h" // CreateUserpicsWithMoreBadge
 #include "calls/calls_panel_background.h"
@@ -1126,6 +1127,22 @@ void Panel::showDevicesMenu(
 		&Core::App().mediaDevices(),
 		std::move(types),
 		chosen);
+	if (_call->state() == Call::State::Established
+		&& Elitegram::OutgoingAudio::selectedEnabled()) {
+		if (const auto audio = _call->outgoingAudio()) {
+			const auto playing = (audio->selectedState()
+				!= Elitegram::SelectedState::Idle)
+				&& (audio->selectedState()
+					!= Elitegram::SelectedState::Finished);
+			_devicesMenu->addSeparator();
+			_devicesMenu->addAction(
+				playing ? u"Stop Selected Audio"_q : u"Play Selected Audio"_q,
+				[audio, playing] {
+					if (playing) audio->stopSelectedAudio();
+					else audio->chooseSelectedAudio();
+				});
+		}
+	}
 	_devicesMenu->setForcedVerticalOrigin(
 		Ui::PopupMenu::VerticalOrigin::Bottom);
 	_devicesMenu->popup(button->mapToGlobal(QPoint())

@@ -92,6 +92,15 @@ class Domain;
 class SessionSettings;
 class SendAsPeers;
 
+} // namespace Main
+
+namespace Elitegram {
+class PrivacyController;
+class DeletedMessagesStore;
+} // namespace Elitegram
+
+namespace Main {
+
 struct FreezeInfo {
 	TimeId since = 0;
 	TimeId until = 0;
@@ -216,6 +225,12 @@ public:
 	[[nodiscard]] SessionSettings &settings() const {
 		return *_settings;
 	}
+	[[nodiscard]] Elitegram::PrivacyController &elitegramPrivacy() const {
+		return *_elitegramPrivacy;
+	}
+	[[nodiscard]] Elitegram::DeletedMessagesStore &deletedMessages() const {
+		return *_deletedMessages;
+	}
 	[[nodiscard]] SendAsPeers &sendAsPeers() const {
 		return *_sendAsPeers;
 	}
@@ -319,6 +334,8 @@ private:
 
 	// _data depends on _downloader / _uploader.
 	const std::unique_ptr<Data::Session> _data;
+	const std::unique_ptr<Elitegram::PrivacyController> _elitegramPrivacy;
+	const std::unique_ptr<Elitegram::DeletedMessagesStore> _deletedMessages;
 	const not_null<UserData*> _user;
 
 	// _emojiStickersPack depends on _data.

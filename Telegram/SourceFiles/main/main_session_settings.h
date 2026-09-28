@@ -198,6 +198,40 @@ public:
 	[[nodiscard]] auto extraFavoriteReactions() const
 	-> const std::vector<Data::ReactionId> &;
 
+	void setElitegramGhostEnabled(bool enabled) {
+		_elitegramGhostEnabled = enabled;
+	}
+	[[nodiscard]] bool elitegramGhostEnabled() const {
+		return _elitegramGhostEnabled;
+	}
+	void setElitegramSeenOnReply(bool enabled) {
+		_elitegramSeenOnReply = enabled;
+	}
+	[[nodiscard]] bool elitegramSeenOnReply() const {
+		return _elitegramSeenOnReply;
+	}
+	void setElitegramKeepDeletedMessages(bool enabled) {
+		_elitegramKeepDeletedMessages = enabled;
+	}
+	[[nodiscard]] bool elitegramKeepDeletedMessages() const {
+		return _elitegramKeepDeletedMessages;
+	}
+	void setElitegramDeletedMediaLimit(int index) {
+		_elitegramDeletedMediaLimit = index;
+	}
+	[[nodiscard]] int elitegramDeletedMediaLimit() const {
+		return _elitegramDeletedMediaLimit;
+	}
+	void setElitegramShowDc(bool enabled) {
+		_elitegramShowDc = enabled;
+	}
+	[[nodiscard]] bool elitegramShowDc() const {
+		return _elitegramShowDc.current();
+	}
+	[[nodiscard]] rpl::producer<bool> elitegramShowDcValue() const {
+		return _elitegramShowDc.value();
+	}
+
 private:
 	static constexpr auto kDefaultSupportChatsLimitSlice = 7 * 24 * 60 * 60;
 	static constexpr auto kPhotoEditorHintMaxShowsCount = 5;
@@ -250,6 +284,11 @@ private:
 	rpl::variable<bool> _phoneNumberHidden = false;
 
 	std::vector<Data::ReactionId> _extraFavoriteReactions;
+	bool _elitegramGhostEnabled = false;
+	bool _elitegramSeenOnReply = true;
+	bool _elitegramKeepDeletedMessages = true;
+	int _elitegramDeletedMediaLimit = 1; // 512 MB, 1 GB, 2 GB, 5 GB, Unlimited.
+	rpl::variable<bool> _elitegramShowDc = true;
 
 };
 

@@ -296,9 +296,10 @@ void TopBar::initControls() {
 				_show->showToast(
 					tr::lng_group_call_force_muted_sub(tr::now));
 			} else {
-				group->setMuted((group->muted() == MuteState::Muted)
-					? MuteState::Active
-					: MuteState::Muted);
+				const auto muted = group->muted() != MuteState::Muted;
+				group->setMutedAndUpdate(muted
+					? MuteState::Muted
+					: MuteState::Active);
 			}
 		}
 	});

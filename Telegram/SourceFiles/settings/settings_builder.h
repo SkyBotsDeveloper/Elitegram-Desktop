@@ -191,6 +191,7 @@ public:
 		Ui::VerticalLayout *container = nullptr;
 		rpl::producer<QString> label;
 		rpl::producer<bool> toggled;
+		bool toggleIgnoreClick = false;
 		Fn<void()> onClick;
 		QStringList keywords;
 		HighlightArgs highlight;

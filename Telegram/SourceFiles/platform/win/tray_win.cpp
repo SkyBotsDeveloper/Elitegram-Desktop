@@ -26,7 +26,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <qpa/qplatformtheme.h>
 #include <private/qguiapplication_p.h>
 #include <private/qhighdpiscaling_p.h>
-#include <QSvgRenderer>
 #include <QBuffer>
 
 namespace Platform {
@@ -61,18 +60,14 @@ bool DarkTasbarValueValid/* = false*/;
 [[nodiscard]] QImage MonochromeIconFor(int size, bool darkMode) {
 	Expects(size > 0);
 
-	static const auto Content = [&] {
-		auto f = QFile(u":/gui/icons/tray/monochrome.svg"_q);
-		return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
-	}();
 	static auto Mask = QImage();
 	static auto Size = 0;
 	if (Mask.isNull() || Size != size) {
 		Size = size;
-		Mask = QImage(size, size, QImage::Format_ARGB32_Premultiplied);
-		Mask.fill(Qt::transparent);
-		auto p = QPainter(&Mask);
-		QSvgRenderer(Content).render(&p, QRectF(0, 0, size, size));
+		Mask = Window::LogoNoMargin().scaledToWidth(
+			size,
+			Qt::SmoothTransformation
+		);
 	}
 	static auto Colored = QImage();
 	static auto ColoredDark = QImage();

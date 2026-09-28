@@ -723,7 +723,7 @@ NotifyPreview::NotifyPreview(bool nameShown, bool previewShown)
 , _previewShown(previewShown)
 , _roundRect(st::boxRadius, st::msgInBg)
 , _userpic(u":/gui/icons/settings/dino.svg"_q)
-, _logo(Window::LogoNoMargin()) {
+, _logo(Window::Logo()) {
 	const auto ratio = style::DevicePixelRatio();
 	_logo = _logo.scaledToWidth(
 		st::notifyPreviewUserpicSize * ratio,

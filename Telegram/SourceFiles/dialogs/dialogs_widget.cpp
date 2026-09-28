@@ -68,6 +68,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/shortcuts.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
+#include "window/window_session_controller_link_info.h"
 #include "window/window_slide_animation.h"
 #include "window/window_connecting_widget.h"
 #include "window/window_main_menu.h"
@@ -104,6 +105,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qt/qt_common_adapters.h"
 
 #include <QtCore/QMimeData>
+#include <QtGui/QCursor>
 #include <QtGui/QTextBlock>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QTextEdit>
@@ -231,6 +233,196 @@ QImage CommunityAddChatNarrowButton::prepareRippleMask() const {
 } // namespace
 
 const char kOptionForumHideChatsList[] = "forum-hide-chats-list";
+
+class ElitegramPromoAvatar final : public Ui::AbstractButton {
+public:
+	ElitegramPromoAvatar(
+			QWidget *parent,
+			not_null<Window::SessionController*> controller)
+	: Ui::AbstractButton(parent)
+	, _controller(controller) {
+		const auto size = style::ConvertScale(44);
+		setFixedSize(size, size);
+		setCursor(Qt::PointingHandCursor);
+		setFocusPolicy(Qt::NoFocus);
+		setAccessibleName(u"Elitegram channel (@aboutelite)"_q);
+		setClickedCallback([=] {
+			_controller->showPeerByLink(Window::PeerByLinkInfo{
+				.usernameOrId = u"aboutelite"_q,
+			});
+		});
+		style::PaletteChanged() | rpl::on_next([=] {
+			update();
+		}, lifetime());
+		_controller->session().changes().peerUpdates(
+			Data::PeerUpdate::Flag::Photo
+				| Data::PeerUpdate::Flag::Username
+		) | rpl::on_next([=](const Data::PeerUpdate &update) {
+			if (_controller->session().data().peerByUsername(
+					u"aboutelite"_q) == update.peer.get()) {
+				this->update();
+			}
+		}, lifetime());
+		_controller->session().downloaderTaskFinished(
+		) | rpl::on_next([=] {
+			if (_waitingForPhoto
+				&& isVisible()
+				&& !Ui::PeerUserpicLoading(_userpic)) {
+				update();
+			}
+		}, lifetime());
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		if (const auto peer = _controller->session().data().peerByUsername(
+				u"aboutelite"_q); peer && peer->asChannel()) {
+			if (peer->userpicCloudImage(_userpic)) {
+				_waitingForPhoto = false;
+				peer->paintUserpic(p, _userpic, 0, 0, width(), true);
+				return;
+			}
+			_waitingForPhoto = Ui::PeerUserpicLoading(_userpic);
+		} else {
+			_waitingForPhoto = false;
+		}
+		p.setRenderHint(QPainter::Antialiasing);
+		p.setPen(Qt::NoPen);
+		p.setBrush(st::activeButtonBg);
+		p.drawEllipse(rect());
+		p.setFont(st::semiboldFont);
+		p.setPen(st::activeButtonFg);
+		p.drawText(rect(), Qt::AlignCenter, u"E"_q);
+	}
+
+private:
+	not_null<Window::SessionController*> _controller;
+	Ui::PeerUserpicView _userpic;
+	bool _waitingForPhoto = false;
+};
+
+class ElitegramPromoBanner final : public Ui::AbstractButton {
+public:
+	ElitegramPromoBanner(
+			QWidget *parent,
+			not_null<Window::SessionController*> controller)
+	: Ui::AbstractButton(parent)
+	, _avatar(this, controller)
+	, _timer([=] { advanceText(); }) {
+		setFixedHeight(style::ConvertScale(64));
+		setCursor(Qt::PointingHandCursor);
+		setFocusPolicy(Qt::NoFocus);
+		setAccessibleName(u"Elitegram official channel"_q);
+		setClickedCallback([=] {
+			if (_avatar->geometry().contains(mapFromGlobal(QCursor::pos()))) {
+				return;
+			}
+			controller->showPeerByLink(Window::PeerByLinkInfo{
+				.usernameOrId = u"aboutelite"_q,
+			});
+		});
+		style::PaletteChanged() | rpl::on_next([=] {
+			update();
+		}, lifetime());
+	}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		auto p = QPainter(this);
+		p.fillRect(rect(), st::dialogsBg);
+		p.setRenderHint(QPainter::Antialiasing);
+		const auto inset = style::ConvertScale(6);
+		const auto card = rect().adjusted(
+			inset, style::ConvertScale(4),
+			-inset - 1, -style::ConvertScale(4) - 1);
+		const auto radius = style::ConvertScale(10);
+		const auto dark = (st::dialogsBg->c.lightness() < 128);
+		const auto active = isOver() || isDown();
+		p.setPen(Qt::NoPen);
+		p.setBrush(st::dialogsBgOver);
+		p.drawRoundedRect(card, radius, radius);
+		auto tint = st::activeButtonBg->c;
+		tint.setAlpha(dark ? (active ? 60 : 44) : (active ? 46 : 30));
+		p.setBrush(tint);
+		p.drawRoundedRect(card, radius, radius);
+		auto outline = st::activeButtonBg->c;
+		outline.setAlpha(dark ? 100 : 75);
+		p.setBrush(Qt::NoBrush);
+		p.setPen(QPen(outline, 1));
+		p.drawRoundedRect(card, radius, radius);
+		if (compact()) return;
+		const auto textLeft = style::ConvertScale(70);
+		const auto textWidth = std::max(0,
+			width() - textLeft - style::ConvertScale(12));
+		if (!textWidth) return;
+		p.setFont(st::semiboldFont);
+		p.setPen(st::dialogsNameFg);
+		p.drawText(QRect(textLeft, style::ConvertScale(8),
+			textWidth, style::ConvertScale(24)),
+			Qt::AlignVCenter | Qt::AlignLeft,
+			p.fontMetrics().elidedText(u"Presenting"_q,
+				Qt::ElideRight, textWidth));
+		p.setFont(st::dialogsTextFont);
+		p.setPen(st::dialogsTextFg);
+		const auto subtitle = u"Elitegram by @aboutelite"_q;
+		p.drawText(QRect(textLeft, style::ConvertScale(33),
+			textWidth, style::ConvertScale(22)),
+			Qt::AlignVCenter | Qt::AlignLeft,
+			p.fontMetrics().elidedText(subtitle.left(_characters),
+				Qt::ElideRight, textWidth));
+	}
+
+	void resizeEvent(QResizeEvent *e) override {
+		const auto size = _avatar->width();
+		const auto left = compact()
+			? (width() - size) / 2
+			: style::ConvertScale(14);
+		_avatar->move(left, (height() - size) / 2);
+	}
+
+	void showEvent(QShowEvent *e) override {
+		_characters = 0;
+		_timer.callOnce(260);
+		update();
+	}
+
+	void hideEvent(QHideEvent *e) override {
+		_timer.cancel();
+		_characters = 0;
+	}
+
+	void enterEventHook(QEnterEvent *e) override {
+		Ui::AbstractButton::enterEventHook(e);
+		update();
+	}
+
+	void leaveEventHook(QEvent *e) override {
+		Ui::AbstractButton::leaveEventHook(e);
+		update();
+	}
+
+private:
+	[[nodiscard]] bool compact() const {
+		return width() < style::ConvertScale(176);
+	}
+	void advanceText() {
+		if (!isVisible()) return;
+		const auto length = u"Elitegram by @aboutelite"_q.size();
+		if (_characters < length) {
+			++_characters;
+			_timer.callOnce((_characters == length) ? 900 : 45);
+		} else {
+			_characters = 0;
+			_timer.callOnce(260);
+		}
+		update();
+	}
+
+	object_ptr<ElitegramPromoAvatar> _avatar;
+	base::Timer _timer;
+	int _characters = 0;
+};
 
 class Widget::BottomButton : public Ui::RippleButton {
 public:
@@ -420,6 +612,7 @@ Widget::Widget(
 , _lockUnlock(
 	_searchControls,
 	object_ptr<Ui::IconButton>(this, st::dialogsLock))
+, _elitegramPromoBanner(this, controller)
 , _scroll(this)
 , _scrollToTop(_scroll, st::dialogsToUp)
 , _stories((_layout != Layout::Child)
@@ -1937,6 +2130,11 @@ void Widget::fullSearchRefreshOn(rpl::producer<> events) {
 void Widget::updateControlsVisibility(bool fast) {
 	updateLoadMoreChatsVisibility();
 	_scroll->setVisible(!_suggestions && _hidingSuggestions.empty());
+	_elitegramPromoBanner->setVisible(
+		promoBannerVisible() && _widthAnimationCache.isNull());
+	if (_updateScrollGeometryCached) {
+		_updateScrollGeometryCached();
+	}
 	updateStoriesVisibility();
 	if ((_openedFolder || _openedForum || _openedCommunity)
 		&& _searchHasFocus) {
@@ -2815,6 +3013,7 @@ void Widget::startWidthAnimation() {
 	}
 	_widthAnimationCache = grabNonNarrowScrollFrame();
 	_scroll->hide();
+	_elitegramPromoBanner->hide();
 	if (_frozenAccountBar) {
 		_frozenAccountBar->hide();
 	}
@@ -2828,6 +3027,7 @@ void Widget::stopWidthAnimation() {
 	_widthAnimationCache = QPixmap();
 	if (!_showAnimation) {
 		_scroll->setVisible(!_suggestions);
+		_elitegramPromoBanner->setVisible(promoBannerVisible());
 		if (_frozenAccountBar) {
 			_frozenAccountBar->setVisible(!_suggestions);
 		}
@@ -4435,6 +4635,21 @@ void Widget::resizeEvent(QResizeEvent *e) {
 	updateControlsGeometry();
 }
 
+bool Widget::promoBannerVisible() const {
+	return (_layout == Layout::Main)
+		&& !_openedFolder
+		&& !_openedForum
+		&& !_openedCommunity
+		&& !_searchHasFocus
+		&& !_searchSuggestionsLocked
+		&& _searchState.query.isEmpty()
+		&& !_searchState.inChat
+		&& !_searchState.community
+		&& !searchInPeer()
+		&& !_suggestions
+		&& _hidingSuggestions.empty();
+}
+
 void Widget::updateLockUnlockVisibility(anim::type animated) {
 	if (_showAnimation) {
 		return;
@@ -4687,15 +4902,25 @@ void Widget::updateControlsGeometry() {
 		if (_chatFilters) {
 			_chatFilters->move(0, chatFiltersTop);
 		}
-		const auto scrollTop = chatFiltersTop
+		const auto topAfterFilters = chatFiltersTop
 			+ ((_chatFilters
 				&& _searchState.query.isEmpty()
 				&& !_openedForum
 				&& !_searchState.community
 				&& !searchInPeer())
-				? (_chatFilters->height() * (1. - narrowRatio))
+				? anim::interpolate(
+					_chatFilters->height(), 0, narrowRatio)
 				: 0);
-		const auto scrollHeight = height() - scrollTop - bottomSkip;
+		const auto promoVisible = promoBannerVisible();
+		_elitegramPromoBanner->setGeometry(
+			0, topAfterFilters, scrollWidth,
+			_elitegramPromoBanner->height());
+		_elitegramPromoBanner->setVisible(
+			promoVisible && _widthAnimationCache.isNull());
+		const auto scrollTop = topAfterFilters
+			+ (promoVisible ? _elitegramPromoBanner->height() : 0);
+		const auto scrollHeight = std::max(0,
+			height() - scrollTop - bottomSkip);
 		const auto wasScrollHeight = _scroll->height();
 		_scroll->setGeometry(0, scrollTop, scrollWidth, scrollHeight);
 		if (_chatsFilterSlideCanvas) {

@@ -65,7 +65,7 @@ rpl::producer<TextWithEntities> Text3() {
 } // namespace
 
 void AboutBox(not_null<Ui::GenericBox*> box) {
-	box->setTitle(u"Telegram Desktop"_q);
+	box->setTitle(u"Elitegram Desktop"_q);
 
 	auto layout = box->verticalLayout();
 
@@ -115,6 +115,18 @@ void AboutBox(not_null<Ui::GenericBox*> box) {
 	});
 
 	Ui::AddSkip(layout, st::aboutTopSkip);
+
+	layout->add(
+		object_ptr<Ui::FlatLabel>(
+			box,
+			rpl::single(TextWithEntities{
+				u"Elitegram Desktop\nBased on Telegram Desktop 7.2.9\n"
+					"Maintained by Siddhartha Abhimanyu (@iflexsid)\n"
+					"Updates: @aboutelite  •  Instagram: @elite.sid"_q }),
+			st::aboutLabel),
+		st::boxRowPadding);
+
+	Ui::AddSkip(layout, st::aboutSkip);
 
 	const auto addText = [&](rpl::producer<TextWithEntities> text) {
 		const auto label = layout->add(

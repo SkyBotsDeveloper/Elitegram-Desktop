@@ -271,7 +271,9 @@ Ui::SettingsButton *SectionBuilder::addButton(ButtonArgs &&args) {
 				rpl::duplicate(args.title));
 		}
 		if (args.toggled) {
-			button->toggleOn(std::move(args.toggled));
+			button->toggleOn(
+				std::move(args.toggled),
+				args.toggleIgnoreClick);
 		}
 		return button;
 	};

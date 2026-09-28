@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "calls/group/calls_group_call.h"
+#include "elitegram/elitegram_outgoing_audio.h"
 
 #include "calls/group/calls_group_common.h"
 #include "calls/group/calls_group_messages.h"
@@ -636,13 +637,19 @@ GroupCall::GroupCall(
 	_muted.value(
 	) | rpl::combine_previous(
 	) | rpl::on_next([=](MuteState previous, MuteState state) {
-		if (_instance) {
-			updateInstanceMuteState();
-		}
+		refreshMediaMute();
 		if (_joinState.ssrc
 			&& (!_initialMuteStateSent || state == MuteState::Active)) {
+			const auto initial = !_initialMuteStateSent;
 			_initialMuteStateSent = true;
-			maybeSendMutedUpdate(previous);
+			if (!Elitegram::OutgoingAudio::noMicBlink()) {
+				maybeSendMutedUpdate(previous, initial
+					? MuteUpdateReason::Initial
+					: MuteUpdateReason::Local);
+			}
+		}
+		if (Elitegram::OutgoingAudio::noMicBlink()) {
+			prepareNoMicBlink();
 		}
 	}, _lifetime);
 
@@ -923,12 +930,17 @@ void GroupCall::toggleScreenSharing(
 	if (!_instance || !_id) {
 		return;
 	} else if (!uniqueId) {
+		_screenWithAudio = false;
 		_screenState = Webrtc::VideoState::Inactive;
 		return;
 	}
 	const auto changed = (_screenDeviceId != *uniqueId);
 	const auto wasSharing = isSharingScreen();
 	_screenDeviceId = *uniqueId;
+	// Even muted screen ADM owns Telegram's single far-end reference ring.
+	if (_outgoingAudio) {
+		_outgoingAudio->pauseDeviceAudio(true);
+	}
 	_screenWithAudio = withAudio;
 	_screenState = Webrtc::VideoState::Active;
 	if (changed && wasSharing && isSharingScreen()) {
@@ -1607,6 +1619,14 @@ void GroupCall::rejoin(not_null<PeerData*> as) {
 	_joinState.ssrc = 0;
 	_initialMuteStateSent = false;
 	_systemMuteReconciled = false;
+	_noMicBlinkReconcilePending = false;
+	_serverSelfKnown = false;
+	_serverSelfMuted = false;
+	_serverSelfCanUnmute = false;
+	_noMicBlinkPermissionRequested = false;
+	_noMicBlinkPermissionGranted = false;
+	_noMicBlinkMuteRequested = false;
+	refreshMediaMute();
 	setState(State::Joining);
 	if (!tryCreateController()) {
 		setInstanceMode(InstanceMode::None);
@@ -1656,12 +1676,17 @@ void GroupCall::sendJoinRequest() {
 	const auto wasMuteState = muted();
 	const auto wasVideoStopped = !isSharingCamera();
 	using Flag = MTPphone_JoinGroupCall::Flag;
-	const auto flags = (wasMuteState != MuteState::Active
+	const auto flags = (Elitegram::OutgoingAudio::noMicBlink()
+		|| wasMuteState != MuteState::Active
 		? Flag::f_muted
 		: Flag(0))
 		| (_joinHash.isEmpty() ? Flag(0) : Flag::f_invite_hash)
 		| (wasVideoStopped ? Flag::f_video_stopped : Flag(0))
 		| (_e2e ? (Flag::f_public_key | Flag::f_block) : Flag());
+	LOG(("ElitegramAudio no_mic_blink join local_mute=%1 join_muted=%2"
+		).arg(wasMuteState != MuteState::Active ? 1 : 0
+		).arg((Elitegram::OutgoingAudio::noMicBlink()
+			|| wasMuteState != MuteState::Active) ? 1 : 0));
 	_api.request(MTPphone_JoinGroupCall(
 		MTP_flags(flags),
 		inputCallSafe(),
@@ -1740,8 +1765,13 @@ void GroupCall::startConference() {
 		| Flag::f_public_key
 		| Flag::f_block
 		| Flag::f_params
-		| ((wasMuteState != MuteState::Active) ? Flag::f_muted : Flag(0))
+		| ((Elitegram::OutgoingAudio::noMicBlink()
+			|| wasMuteState != MuteState::Active) ? Flag::f_muted : Flag(0))
 		| (wasVideoStopped ? Flag::f_video_stopped : Flag(0));
+	LOG(("ElitegramAudio no_mic_blink join local_mute=%1 join_muted=%2"
+		).arg(wasMuteState != MuteState::Active ? 1 : 0
+		).arg((Elitegram::OutgoingAudio::noMicBlink()
+			|| wasMuteState != MuteState::Active) ? 1 : 0));
 	_createRequestId = _api.request(MTPphone_CreateConferenceCall(
 		MTP_flags(flags),
 		MTP_int(base::RandomValue<int32>()),
@@ -1794,14 +1824,11 @@ void GroupCall::joinDone(
 		? State::Connecting
 		: State::Joined);
 	applyMeInCallLocally();
-	maybeSendMutedUpdate(wasMuteState);
-	_systemMuteReconciled = true;
-	if (!_rtmp) {
-		const auto state = muted();
-		const auto nowMuted = (state != MuteState::Active)
-			&& (state != MuteState::PushToTalk);
-		Core::App().mediaDevices().setCaptureMuted(nowMuted);
+	if (!Elitegram::OutgoingAudio::noMicBlink()) {
+		maybeSendMutedUpdate(wasMuteState, MuteUpdateReason::Initial);
 	}
+	_systemMuteReconciled = true;
+	refreshMediaMute();
 
 	for (auto &state : _subchains) {
 		// Accept initial join blocks.
@@ -1827,6 +1854,7 @@ void GroupCall::joinDone(
 
 	trackParticipantsWithAccess();
 	applyQueuedSelfUpdates();
+	prepareNoMicBlink();
 	checkFirstTimeJoined();
 	_screenJoinState.nextActionPending = true;
 	checkNextJoinAction();
@@ -2097,7 +2125,9 @@ void GroupCall::applyMeInCallLocally() {
 		| Flag::f_self
 		| Flag::f_volume // Without flag the volume is reset to 100%.
 		| Flag::f_volume_by_admin // Self volume can only be set by admin.
-		| ((muted() != MuteState::Active) ? Flag::f_muted : Flag(0))
+		| ((Elitegram::OutgoingAudio::noMicBlink()
+			? (_serverSelfKnown ? _serverSelfMuted : true)
+			: muted() != MuteState::Active) ? Flag::f_muted : Flag(0))
 		| (raisedHandRating > 0 ? Flag::f_raise_hand_rating : Flag(0));
 	real->applyLocalUpdate(
 		MTP_updateGroupCallParticipants(
@@ -2294,6 +2324,10 @@ void GroupCall::addVideoOutput(
 
 void GroupCall::setMuted(MuteState mute) {
 	const auto set = [=] {
+		if ((mute == MuteState::Active || mute == MuteState::PushToTalk)
+			&& mutedByAdmin()) {
+			return;
+		}
 		const auto was = muted();
 		const auto wasSpeaking = (was == MuteState::Active)
 			|| (was == MuteState::PushToTalk);
@@ -2302,12 +2336,22 @@ void GroupCall::setMuted(MuteState mute) {
 		const auto wasRaiseHand = (was == MuteState::RaisedHand);
 		_muted = mute;
 		const auto now = muted();
+		if (was != now) {
+			LOG(("ElitegramAudio local_mic_transition local_mute=%1 "
+				"server_mute=%2 media_mute=%3 send_audio=%4"
+				).arg((now != MuteState::Active
+					&& now != MuteState::PushToTalk) ? 1 : 0
+				).arg(_serverSelfMuted ? 1 : 0
+				).arg(effectiveMediaMuted() ? 1 : 0
+				).arg(effectiveMediaMuted() ? 0 : 1));
+		}
 		const auto nowSpeaking = (now == MuteState::Active)
 			|| (now == MuteState::PushToTalk);
 		const auto nowMuted = (now == MuteState::Muted)
 			|| (now == MuteState::PushToTalk);
 		const auto nowRaiseHand = (now == MuteState::RaisedHand);
-		if (wasMuted != nowMuted || wasRaiseHand != nowRaiseHand) {
+		if ((wasMuted != nowMuted || wasRaiseHand != nowRaiseHand)
+			&& !Elitegram::OutgoingAudio::noMicBlink()) {
 			applyMeInCallLocally();
 		}
 		if (mutedByAdmin()) {
@@ -2337,7 +2381,7 @@ void GroupCall::setMutedAndUpdate(MuteState mute) {
 	// because it may be set delayed, after permissions request, not now.
 	const auto send = _initialMuteStateSent && (mute != MuteState::Active);
 	setMuted(mute);
-	if (send) {
+	if (send && !Elitegram::OutgoingAudio::noMicBlink()) {
 		maybeSendMutedUpdate(was);
 	}
 }
@@ -2641,6 +2685,21 @@ void GroupCall::applySelfUpdate(const MTPDgroupCallParticipant &data) {
 		}
 		return;
 	}
+	const auto serverChanged = !_serverSelfKnown
+		|| _serverSelfMuted != data.is_muted()
+		|| _serverSelfCanUnmute != data.is_can_self_unmute();
+	_serverSelfKnown = true;
+	_serverSelfMuted = data.is_muted();
+	_serverSelfCanUnmute = data.is_can_self_unmute();
+	if (_serverSelfMuted) {
+		_noMicBlinkMuteRequested = false;
+	}
+	if (serverChanged) {
+		LOG(("ElitegramAudio self_server_state muted=%1 "
+			"can_self_unmute=%2"
+			).arg(_serverSelfMuted ? 1 : 0
+			).arg(_serverSelfCanUnmute ? 1 : 0));
+	}
 	if (data.is_muted() && !data.is_can_self_unmute()) {
 		setMuted(data.vraise_hand_rating().value_or_empty()
 			? MuteState::RaisedHand
@@ -2653,9 +2712,15 @@ void GroupCall::applySelfUpdate(const MTPDgroupCallParticipant &data) {
 		if (!_instanceTransitioning) {
 			notifyAboutAllowedToSpeak();
 		}
-	} else if (data.is_muted() && muted() != MuteState::Muted) {
+	} else if (data.is_muted()
+		&& !Elitegram::OutgoingAudio::noMicBlink()
+		&& !_noMicBlinkReconcilePending
+		&& muted() != MuteState::Muted) {
 		setMuted(MuteState::Muted);
 	}
+	prepareNoMicBlink();
+	reconcileNoMicBlinkOff();
+	refreshMediaMute();
 }
 
 void GroupCall::applyOtherParticipantUpdate(
@@ -2701,16 +2766,13 @@ void GroupCall::setupMediaDevices() {
 		_cameraCapture->switchToDevice(deviceId.value.toStdString(), false);
 	}, _lifetime);
 
-	if (!_rtmp) {
-		_muted.value() | rpl::on_next([=](MuteState state) {
-			const auto devices = &Core::App().mediaDevices();
-			const auto muted = (state != MuteState::Active)
-				&& (state != MuteState::PushToTalk);
-			const auto track = !muted || (state == MuteState::Muted);
-			devices->setCaptureMuted(muted);
-			devices->setCaptureMuteTracker(this, track);
+	Elitegram::OutgoingAudio::noMicBlinkValue()
+		| rpl::skip(1)
+		| rpl::on_next([=](bool enabled) {
+			noMicBlinkChanged(enabled);
 		}, _lifetime);
-	}
+	_mediaDevicesReady = true;
+	refreshMediaMute();
 }
 
 void GroupCall::captureMuteChanged(bool mute) {
@@ -2808,6 +2870,7 @@ bool GroupCall::emitShareScreenError() {
 }
 
 void GroupCall::emitShareScreenError(Error error) {
+	_screenWithAudio = false;
 	_screenState = Webrtc::VideoState::Inactive;
 	_errors.fire_copy(error);
 }
@@ -3036,6 +3099,7 @@ bool GroupCall::tryCreateController() {
 		});
 	};
 
+	_outgoingAudio = Elitegram::OutgoingAudio::Create(true);
 	tgcalls::GroupInstanceDescriptor descriptor = {
 		.threads = tgcalls::StaticThreads::getThreads(),
 		.config = tgcalls::GroupConfig{
@@ -3061,7 +3125,11 @@ bool GroupCall::tryCreateController() {
 		.initialInputDeviceId = captureDeviceIdInitial.value.toStdString(),
 		.initialOutputDeviceId = playbackDeviceIdInitial.value.toStdString(),
 		.createAudioDeviceModule = Webrtc::AudioDeviceModuleCreator(
-			saveSetDeviceIdCallback),
+			saveSetDeviceIdCallback,
+			[audio = _outgoingAudio](
+					int16_t *pcm, int frames, int rate, int channels) {
+				audio->process(pcm, frames, rate, channels);
+			}),
 		.videoCapture = _cameraCapture,
 		.requestCurrentTime = [=, call = base::make_weak(this)](
 				std::function<void(int64_t)> done) {
@@ -3145,8 +3213,13 @@ bool GroupCall::tryCreateController() {
 	LOG(("Call Info: Creating group instance"));
 	_instance = std::make_unique<tgcalls::GroupInstanceCustomImpl>(
 		std::move(descriptor));
+	_instance->setNoMicBlinkActivityMask(
+		Elitegram::OutgoingAudio::noMicBlink());
+	_lastEffectiveMediaMute.reset();
+	refreshMediaMute();
+	_outgoingAudio->pauseDeviceAudio(_screenInstance || isSharingScreen());
+	_outgoingAudio->start();
 
-	updateInstanceMuteState();
 	updateInstanceVolumes();
 	for (auto &[endpoint, sink] : base::take(_pendingVideoOutputs)) {
 		_instance->addIncomingVideoOutput(endpoint, std::move(sink.data));
@@ -3158,6 +3231,9 @@ bool GroupCall::tryCreateController() {
 bool GroupCall::tryCreateScreencast() {
 	if (_screenInstance) {
 		return false;
+	}
+	if (_outgoingAudio) {
+		_outgoingAudio->pauseDeviceAudio(true);
 	}
 
 	const auto weak = base::make_weak(&_screenInstanceGuard);
@@ -3578,12 +3654,167 @@ void GroupCall::fillActiveVideoEndpoints() {
 	updateRequestedVideoChannels();
 }
 
+bool GroupCall::effectiveMediaMuted() const {
+	const auto state = muted();
+	return (state != MuteState::Active
+		&& state != MuteState::PushToTalk)
+		|| (Elitegram::OutgoingAudio::noMicBlink()
+			&& !noMicBlinkCanTransmit());
+}
+
+bool GroupCall::noMicBlinkCanTransmit() const {
+	return !_rtmp
+		&& (muted() == MuteState::Active
+			|| muted() == MuteState::PushToTalk)
+		&& _joinState.ssrc
+		&& (this->state() == State::Joined
+			|| this->state() == State::Connecting)
+		&& _serverSelfKnown
+		&& _serverSelfMuted
+		&& _serverSelfCanUnmute
+		&& _noMicBlinkPermissionGranted;
+}
+
+void GroupCall::refreshMediaMute() {
+	const auto mediaMuted = effectiveMediaMuted();
+	const auto changed = !_lastEffectiveMediaMute
+		|| *_lastEffectiveMediaMute != mediaMuted;
+	if (_outgoingAudio && changed) {
+		_outgoingAudio->setMuted(mediaMuted);
+	}
+	if (_instance) {
+		updateInstanceMuteState();
+	}
+	if (_mediaDevicesReady && !_rtmp) {
+		const auto devices = &Core::App().mediaDevices();
+		devices->setCaptureMuted(mediaMuted);
+		devices->setCaptureMuteTracker(this,
+			!mediaMuted || muted() == MuteState::Muted);
+	}
+	if (changed) {
+		_lastEffectiveMediaMute = mediaMuted;
+		const auto reason = mutedByAdmin()
+			? u"force_muted"_q
+			: Elitegram::OutgoingAudio::noMicBlink()
+			? u"no_mic_blink"_q
+			: u"normal"_q;
+		LOG(("ElitegramAudio media_gate reason=%1 local_mute=%2 "
+			"server_mute=%3 media_mute=%4 send_audio=%5"
+			).arg(reason
+			).arg((muted() != MuteState::Active
+				&& muted() != MuteState::PushToTalk) ? 1 : 0
+			).arg(_serverSelfMuted ? 1 : 0
+			).arg(mediaMuted ? 1 : 0
+			).arg(mediaMuted ? 0 : 1));
+	}
+}
+
+void GroupCall::prepareNoMicBlink() {
+	if (!Elitegram::OutgoingAudio::noMicBlink()
+		|| _rtmp
+		|| !_joinState.ssrc
+		|| (state() != State::Joined && state() != State::Connecting)
+		|| mutedByAdmin()) {
+		return;
+	}
+	if (!_serverSelfKnown
+		|| (_serverSelfMuted && !_serverSelfCanUnmute)) {
+		return;
+	}
+	if (!_serverSelfMuted) {
+		if (!_noMicBlinkMuteRequested) {
+			_noMicBlinkMuteRequested = true;
+			sendSelfUpdate(
+				SendUpdateType::Mute,
+				MuteUpdateReason::EnableNoMicBlink);
+		}
+		return;
+	}
+	if ((muted() == MuteState::Active
+		|| muted() == MuteState::PushToTalk)
+		&& !_noMicBlinkPermissionRequested) {
+		_noMicBlinkPermissionRequested = true;
+		_delegate->groupCallRequestPermissionsOrFail(crl::guard(this, [=] {
+			if (Elitegram::OutgoingAudio::noMicBlink()
+				&& !mutedByAdmin()) {
+				_noMicBlinkPermissionGranted = true;
+				refreshMediaMute();
+			}
+		}));
+	}
+}
+
+void GroupCall::noMicBlinkChanged(bool enabled) {
+	if (_instance) {
+		_instance->setNoMicBlinkActivityMask(enabled);
+		if (enabled) {
+			LOG(("ElitegramAudio activity_mask enabled=1 "
+				"rtp_level=105 vad=0"));
+		} else {
+			LOG(("ElitegramAudio activity_mask enabled=0"));
+		}
+	}
+	if (enabled) {
+		_peer->session().sendProgressManager().update(
+			_history,
+			Api::SendProgressType::Speaking,
+			-1);
+	}
+	_noMicBlinkPermissionRequested = false;
+	_noMicBlinkPermissionGranted = false;
+	_noMicBlinkMuteRequested = false;
+	if (enabled) {
+		_noMicBlinkReconcilePending = false;
+		prepareNoMicBlink();
+	} else {
+		if (_pendingSelfUpdates & SendUpdateType::Mute) {
+			_pendingSelfUpdates &= ~SendUpdateType::Mute;
+			LOG(("ElitegramAudio mute_pending_drop "
+				"reason=no_mic_blink_disabled"));
+		}
+		_noMicBlinkReconcilePending = _joinState.ssrc
+			&& (state() == State::Joined
+				|| state() == State::Connecting);
+		reconcileNoMicBlinkOff();
+	}
+	refreshMediaMute();
+	LOG(("ElitegramAudio global_mute speaking_action_mask=%1 audio_send=%2"
+		).arg(enabled ? 1 : 0
+		).arg(effectiveMediaMuted() ? 0 : 1));
+	LOG(("ElitegramAudio no_mic_blink setting=%1 local_mute=%2 "
+		"server_mute=%3"
+		).arg(enabled ? 1 : 0
+		).arg((muted() != MuteState::Active
+			&& muted() != MuteState::PushToTalk) ? 1 : 0
+		).arg(_serverSelfMuted ? 1 : 0));
+}
+
+void GroupCall::reconcileNoMicBlinkOff() {
+	if (!_noMicBlinkReconcilePending
+		|| Elitegram::OutgoingAudio::noMicBlink()
+		|| !_serverSelfKnown
+		|| _selfUpdateRequestId) {
+		return;
+	}
+	const auto state = muted();
+	const auto shouldMute = state != MuteState::Active
+		&& state != MuteState::PushToTalk;
+	if (!shouldMute && (!_serverSelfCanUnmute || mutedByAdmin())) {
+		_noMicBlinkReconcilePending = false;
+		return;
+	}
+	_noMicBlinkReconcilePending = false;
+	if (_serverSelfMuted != shouldMute) {
+		sendSelfUpdate(
+			SendUpdateType::Mute,
+			MuteUpdateReason::Reconcile);
+	}
+}
+
 void GroupCall::updateInstanceMuteState() {
 	Expects(_instance != nullptr);
 
-	const auto state = muted();
-	_instance->setIsMuted(state != MuteState::Active
-		&& state != MuteState::PushToTalk);
+	_instance->setIsMuted(effectiveMediaMuted());
 }
 
 float64 GroupCall::singleSourceVolumeValue() const {
@@ -3668,6 +3899,7 @@ void GroupCall::audioLevelsUpdated(const tgcalls::GroupLevelsUpdate &data) {
 		}
 		if (me
 			&& voice
+			&& !Elitegram::OutgoingAudio::noMicBlink()
 			&& (!_lastSendProgressUpdate
 				|| _lastSendProgressUpdate + kUpdateSendActionEach < now)) {
 			_lastSendProgressUpdate = now;
@@ -3876,20 +4108,42 @@ void GroupCall::setScreenInstanceMode(InstanceMode mode) {
 	}(), true, false);
 }
 
-void GroupCall::maybeSendMutedUpdate(MuteState previous) {
+void GroupCall::maybeSendMutedUpdate(
+		MuteState previous,
+		MuteUpdateReason reason) {
+	if (Elitegram::OutgoingAudio::noMicBlink()
+		&& reason == MuteUpdateReason::Local) {
+		LOG(("ElitegramAudio self_mute_api reason=local "
+			"request_muted=%1 suppressed=1"
+			).arg(muted() != MuteState::Active ? 1 : 0));
+		return;
+	}
 	// Send Active <-> !Active or ForceMuted <-> RaisedHand changes.
 	const auto now = muted();
 	if ((previous == MuteState::Active && now == MuteState::Muted)
 		|| (now == MuteState::Active
 			&& (previous == MuteState::Muted
 				|| previous == MuteState::PushToTalk))) {
-		sendSelfUpdate(SendUpdateType::Mute);
+		LOG(("ElitegramAudio no_mic_blink local_mute=%1 server_update=requested"
+			).arg(now == MuteState::Muted ? 1 : 0));
+		sendSelfUpdate(SendUpdateType::Mute, reason);
 	} else if ((now == MuteState::ForceMuted
 		&& previous == MuteState::RaisedHand)
 		|| (now == MuteState::RaisedHand
 			&& previous == MuteState::ForceMuted)) {
 		sendSelfUpdate(SendUpdateType::RaiseHand);
 	}
+}
+
+bool GroupCall::dropPendingMuteUpdateForNoMicBlink() {
+	if (!Elitegram::OutgoingAudio::noMicBlink()
+		|| !(_pendingSelfUpdates & SendUpdateType::Mute)
+		|| _pendingMuteReason == MuteUpdateReason::EnableNoMicBlink) {
+		return false;
+	}
+	_pendingSelfUpdates &= ~SendUpdateType::Mute;
+	LOG(("ElitegramAudio mute_pending_drop reason=no_mic_blink"));
+	return true;
 }
 
 void GroupCall::sendPendingSelfUpdates() {
@@ -3905,23 +4159,73 @@ void GroupCall::sendPendingSelfUpdates() {
 		SendUpdateType::ScreenPaused,
 	};
 	for (const auto type : updates) {
+		if (type == SendUpdateType::Mute
+			&& dropPendingMuteUpdateForNoMicBlink()) {
+			continue;
+		}
 		if (type == SendUpdateType::ScreenPaused
 			&& _screenJoinState.action != JoinAction::None) {
 			continue;
 		}
 		if (_pendingSelfUpdates & type) {
 			_pendingSelfUpdates &= ~type;
-			sendSelfUpdate(type);
+			sendSelfUpdate(type, (type == SendUpdateType::Mute)
+				? _pendingMuteReason
+				: MuteUpdateReason::Local, true);
 			return;
 		}
 	}
 }
 
-void GroupCall::sendSelfUpdate(SendUpdateType type) {
+void GroupCall::sendSelfUpdate(
+		SendUpdateType type,
+		MuteUpdateReason reason,
+		bool fromPending) {
+	if (type == SendUpdateType::Mute
+		&& reason != MuteUpdateReason::Initial
+		&& reason != MuteUpdateReason::EnableNoMicBlink
+		&& Elitegram::OutgoingAudio::noMicBlink()) {
+		LOG(("ElitegramAudio self_mute_api reason=local "
+			"request_muted=%1 suppressed=1"
+			).arg(muted() != MuteState::Active ? 1 : 0));
+		dropPendingMuteUpdateForNoMicBlink();
+		return;
+	}
 	if ((state() != State::Connecting && state() != State::Joined)
 		|| _selfUpdateRequestId) {
+		if (type == SendUpdateType::Mute
+			&& (!(_pendingSelfUpdates & type)
+				|| reason == MuteUpdateReason::Initial
+				|| reason == MuteUpdateReason::EnableNoMicBlink
+				|| (reason == MuteUpdateReason::Reconcile
+					&& _pendingMuteReason == MuteUpdateReason::Local))) {
+			_pendingMuteReason = reason;
+		}
 		_pendingSelfUpdates |= type;
 		return;
+	}
+	const auto requestMuted = (reason == MuteUpdateReason::EnableNoMicBlink)
+		|| (reason == MuteUpdateReason::Initial
+			&& Elitegram::OutgoingAudio::noMicBlink())
+		|| (reason == MuteUpdateReason::Reconcile
+			? (muted() != MuteState::Active
+				&& muted() != MuteState::PushToTalk)
+			: muted() != MuteState::Active);
+	if (type == SendUpdateType::Mute) {
+		const auto label = (reason == MuteUpdateReason::Initial)
+			? u"initial"_q
+			: (reason == MuteUpdateReason::EnableNoMicBlink)
+			? u"enable_no_mic_blink"_q
+			: (reason == MuteUpdateReason::Reconcile)
+			? u"reconcile"_q
+			: u"local"_q;
+		LOG(("ElitegramAudio self_mute_api reason=%1 pending=%2 "
+			"local_mute=%3 no_mic_blink=%4 request_muted=%5 suppressed=0"
+			).arg(label
+			).arg(fromPending ? 1 : 0
+			).arg(muted() != MuteState::Active ? 1 : 0
+			).arg(Elitegram::OutgoingAudio::noMicBlink() ? 1 : 0
+			).arg(requestMuted ? 1 : 0));
 	}
 	using Flag = MTPphone_EditGroupCallParticipant::Flag;
 	_selfUpdateRequestId = _api.request(MTPphone_EditGroupCallParticipant(
@@ -3936,7 +4240,7 @@ void GroupCall::sendSelfUpdate(SendUpdateType type) {
 			: Flag::f_muted),
 		inputCall(),
 		joinAs()->input(),
-		MTP_bool(muted() != MuteState::Active),
+		MTP_bool(requestMuted),
 		MTP_int(100000), // volume
 		MTP_bool(muted() == MuteState::RaisedHand),
 		MTP_bool(!isSharingCamera()),
@@ -3945,13 +4249,17 @@ void GroupCall::sendSelfUpdate(SendUpdateType type) {
 	)).done([=](const MTPUpdates &result) {
 		_selfUpdateRequestId = 0;
 		_peer->session().api().applyUpdates(result);
+		reconcileNoMicBlinkOff();
 		sendPendingSelfUpdates();
 	}).fail([=](const MTP::Error &error) {
 		_selfUpdateRequestId = 0;
+		reconcileNoMicBlinkOff();
 		if (error.type() == u"GROUPCALL_FORBIDDEN"_q) {
 			LOG(("Call Info: Rejoin after error '%1' in editGroupCallMember."
 				).arg(error.type()));
 			startRejoin();
+		} else if (Elitegram::OutgoingAudio::noMicBlink()) {
+			sendPendingSelfUpdates();
 		}
 	}).send();
 }
@@ -3998,6 +4306,14 @@ void GroupCall::toggleMute(const Group::MuteRequest &data) {
 	if (_rtmp || videoStream()) {
 		_singleSourceVolume = data.mute ? 0 : Group::kDefaultVolume;
 		updateInstanceVolumes();
+	} else if (data.peer == joinAs()
+		&& Elitegram::OutgoingAudio::noMicBlink()) {
+		if (!data.mute && mutedByAdmin()) {
+			return;
+		}
+		setMutedAndUpdate(data.mute
+			? MuteState::Muted
+			: MuteState::Active);
 	} else if (data.locallyOnly) {
 		applyParticipantLocally(data.peer, data.mute, std::nullopt);
 	} else {
@@ -4020,6 +4336,12 @@ void GroupCall::editParticipant(
 		not_null<PeerData*> participantPeer,
 		bool mute,
 		std::optional<int> volume) {
+	if (participantPeer == joinAs()
+		&& Elitegram::OutgoingAudio::noMicBlink()
+		&& !volume) {
+		setMutedAndUpdate(mute ? MuteState::Muted : MuteState::Active);
+		return;
+	}
 	const auto participant = LookupParticipant(this, participantPeer);
 	if (!participant) {
 		return;
@@ -4027,8 +4349,17 @@ void GroupCall::editParticipant(
 	applyParticipantLocally(participantPeer, mute, volume);
 
 	using Flag = MTPphone_EditGroupCallParticipant::Flag;
-	const auto flags = Flag::f_muted
+	const auto selfVolumeOnly = volume.has_value()
+		&& participantPeer == joinAs()
+		&& Elitegram::OutgoingAudio::noMicBlink();
+	const auto flags = (selfVolumeOnly ? Flag(0) : Flag::f_muted)
 		| (volume.has_value() ? Flag::f_volume : Flag(0));
+	if (participantPeer == joinAs() && !selfVolumeOnly) {
+		LOG(("ElitegramAudio self_mute_api reason=other "
+			"request_muted=%1 suppressed=0 no_mic_blink=%2"
+			).arg(mute ? 1 : 0
+			).arg(Elitegram::OutgoingAudio::noMicBlink() ? 1 : 0));
+	}
 	_api.request(MTPphone_EditGroupCallParticipant(
 		MTP_flags(flags),
 		inputCall(),
@@ -4258,6 +4589,7 @@ MTPInputGroupCall GroupCall::inputCallSafe() const {
 }
 
 void GroupCall::destroyController() {
+	if (_outgoingAudio) _outgoingAudio->stop();
 	if (_instance) {
 		DEBUG_LOG(("Call Info: Destroying call controller.."));
 		invalidate_weak_ptrs(&_instanceGuard);
@@ -4280,14 +4612,26 @@ void GroupCall::destroyScreencast() {
 		invalidate_weak_ptrs(&_screenInstanceGuard);
 
 		_screenInstance->stop(nullptr);
+		const auto weak = base::make_weak(this);
 		crl::async([
 			instance = base::take(_screenInstance),
-			done = _delegate->groupCallAddAsyncWaiter()
+			done = _delegate->groupCallAddAsyncWaiter(),
+			weak
 		]() mutable {
 			instance = nullptr;
+			crl::on_main(weak, [=] {
+				if (const auto strong = weak.get(); strong
+					&& !strong->_screenInstance
+					&& !strong->isSharingScreen()
+					&& strong->_outgoingAudio) {
+					strong->_outgoingAudio->pauseDeviceAudio(false);
+				}
+			});
 			DEBUG_LOG(("Call Info: Call screen controller destroyed."));
 			done();
 		});
+	} else if (_outgoingAudio && !isSharingScreen()) {
+		_outgoingAudio->pauseDeviceAudio(false);
 	}
 }
 

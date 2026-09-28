@@ -95,6 +95,11 @@ QByteArray SessionSettings::serialize() const {
 	for (const auto &id : _extraFavoriteReactions) {
 		size += sizeof(quint64) + Serialize::stringSize(id.emoji());
 	}
+	size += sizeof(qint32); // _elitegramGhostEnabled
+	size += sizeof(qint32); // _elitegramSeenOnReply
+	size += sizeof(qint32); // _elitegramKeepDeletedMessages
+	size += sizeof(qint32); // _elitegramDeletedMediaLimit
+	size += sizeof(qint32); // _elitegramShowDc
 
 	auto result = QByteArray();
 	result.reserve(size);
@@ -187,6 +192,11 @@ QByteArray SessionSettings::serialize() const {
 		for (const auto &id : _extraFavoriteReactions) {
 			stream << quint64(id.custom()) << id.emoji();
 		}
+		stream << qint32(_elitegramGhostEnabled ? 1 : 0);
+		stream << qint32(_elitegramSeenOnReply ? 1 : 0);
+		stream << qint32(_elitegramKeepDeletedMessages ? 1 : 0);
+		stream << qint32(_elitegramDeletedMediaLimit);
+		stream << qint32(_elitegramShowDc.current() ? 1 : 0);
 	}
 
 	Ensures(result.size() == size);
@@ -262,6 +272,11 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 	std::vector<int32> moderateCommonGroups;
 	qint32 disableSharingBoxShowsCount = 0;
 	qint32 phoneNumberHidden = 0;
+	qint32 elitegramGhostEnabled = 0;
+	qint32 elitegramSeenOnReply = 1;
+	qint32 elitegramKeepDeletedMessages = 1;
+	qint32 elitegramDeletedMediaLimit = 1;
+	qint32 elitegramShowDc = 1;
 	std::vector<Data::ReactionId> extraFavoriteReactions;
 
 	stream >> versionTag;
@@ -745,6 +760,21 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 			}
 		}
 	}
+	if (!stream.atEnd()) {
+		stream >> elitegramGhostEnabled;
+	}
+	if (!stream.atEnd()) {
+		stream >> elitegramSeenOnReply;
+	}
+	if (!stream.atEnd()) {
+		stream >> elitegramKeepDeletedMessages;
+	}
+	if (!stream.atEnd()) {
+		stream >> elitegramDeletedMediaLimit;
+	}
+	if (!stream.atEnd()) {
+		stream >> elitegramShowDc;
+	}
 	if (stream.status() != QDataStream::Ok) {
 		LOG(("App Error: "
 			"Bad data for SessionSettings::addFromSerialized()"));
@@ -811,6 +841,13 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 	_disableSharingBoxShowsCount = disableSharingBoxShowsCount;
 	_phoneNumberHidden = (phoneNumberHidden == 1);
 	_extraFavoriteReactions = std::move(extraFavoriteReactions);
+	_elitegramGhostEnabled = (elitegramGhostEnabled == 1);
+	_elitegramSeenOnReply = (elitegramSeenOnReply == 1);
+	_elitegramKeepDeletedMessages = (elitegramKeepDeletedMessages == 1);
+	_elitegramDeletedMediaLimit = (elitegramDeletedMediaLimit >= 0
+		&& elitegramDeletedMediaLimit <= 4)
+		? elitegramDeletedMediaLimit : 1;
+	_elitegramShowDc = (elitegramShowDc == 1);
 
 	if (version < 2) {
 		app.setLastSeenWarningSeen(appLastSeenWarningSeen == 1);

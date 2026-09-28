@@ -14,6 +14,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session_settings.h"
+#include "elitegram/elitegram_privacy.h"
+#include "elitegram/elitegram_deleted_messages.h"
 #include "main/main_app_config.h"
 #include "main/session/send_as_peers.h"
 #include "mtproto/mtproto_config.h"
@@ -111,6 +113,8 @@ Session::Session(
 , _uploader(std::make_unique<Storage::Uploader>(_api.get()))
 , _storage(std::make_unique<Storage::Facade>())
 , _data(std::make_unique<Data::Session>(this))
+, _elitegramPrivacy(std::make_unique<Elitegram::PrivacyController>(this))
+, _deletedMessages(std::make_unique<Elitegram::DeletedMessagesStore>(this))
 , _user(_data->processUser(user))
 , _emojiStickersPack(std::make_unique<Stickers::EmojiPack>(this))
 , _diceStickersPacks(std::make_unique<Stickers::DicePacks>(this))
@@ -311,6 +315,7 @@ QByteArray Session::validTmpPassword() const {
 // Can be called only right before ~Session.
 void Session::finishLogout() {
 	unlockTerms();
+	_deletedMessages->clearForLogout();
 	data().clear();
 	data().clearLocalStorage();
 }

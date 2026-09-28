@@ -885,6 +885,13 @@ PRIVATE
     editor/photo_editor_controls.h
     editor/photo_editor_layer_widget.cpp
     editor/photo_editor_layer_widget.h
+    elitegram/elitegram_privacy.cpp
+    elitegram/elitegram_privacy.h
+    elitegram/elitegram_deleted_messages.cpp
+    elitegram/elitegram_deleted_messages.h
+    elitegram/elitegram_outgoing_audio.cpp
+    elitegram/elitegram_outgoing_audio.h
+    elitegram/elitegram_voice_effects.h
     editor/scene/scene_item_sticker.cpp
     editor/scene/scene_item_sticker.h
     editor/video/video_editor.cpp
@@ -1853,6 +1860,8 @@ PRIVATE
     settings/detailed_settings_button.h
     settings/sections/settings_credits.cpp
     settings/sections/settings_credits.h
+    settings/sections/settings_elitegram.cpp
+    settings/sections/settings_elitegram.h
     settings/settings_credits_graphics.cpp
     settings/settings_credits_graphics.h
     settings/settings_experimental.cpp
@@ -2393,7 +2402,7 @@ else()
         set(bundle_identifier "com.tdesktop.Telegram")
     endif()
     set(bundle_entitlements "Telegram.entitlements")
-    set(output_name "Telegram")
+    set(output_name "Elitegram")
 endif()
 
 if (CMAKE_GENERATOR STREQUAL Xcode)

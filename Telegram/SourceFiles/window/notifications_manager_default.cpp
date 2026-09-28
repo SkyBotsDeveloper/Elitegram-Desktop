@@ -103,7 +103,7 @@ QPixmap Manager::hiddenUserpicPlaceholder() const {
 	if (_hiddenUserpicPlaceholder.isNull()) {
 		const auto ratio = style::DevicePixelRatio();
 		_hiddenUserpicPlaceholder = Ui::PixmapFromImage(
-			LogoNoMargin().scaled(
+			Logo().scaled(
 				st::notifyPhotoSize * ratio,
 				st::notifyPhotoSize * ratio,
 				Qt::IgnoreAspectRatio,
@@ -1005,7 +1005,7 @@ void Notification::updateNotifyDisplay() {
 				: TextWithEntities{ name };
 		};
 		auto title = options.hideNameAndPhoto
-			? TextWithEntities{ u"Telegram Desktop"_q }
+			? TextWithEntities{ u"Elitegram"_q }
 			: reminder
 			? tr::lng_notification_reminder(tr::now, tr::marked)
 			: topicWithChat();

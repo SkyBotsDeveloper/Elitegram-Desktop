@@ -49,6 +49,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "settings/sections/settings_business.h"
 #include "settings/sections/settings_calls.h"
 #include "settings/sections/settings_chat.h"
+#include "settings/sections/settings_elitegram.h"
 #include "settings/settings_codes.h"
 #include "settings/settings_faq_suggestions.h"
 #include "settings/sections/settings_credits.h"
@@ -386,6 +387,13 @@ void BuildSectionButtons(SectionBuilder &builder) {
 		.targetSection = PrivacySecurityId(),
 		.icon = { &st::menuIconLock },
 		.keywords = { u"security"_q, u"passcode"_q, u"password"_q, u"2fa"_q },
+	});
+
+	builder.addSectionButton({
+		.title = rpl::single(u"Elitegram Features"_q),
+		.targetSection = ElitegramFeaturesId(),
+		.icon = { &st::menuIconLock },
+		.keywords = { u"elitegram"_q, u"ghost"_q, u"privacy"_q },
 	});
 
 	builder.addSectionButton({

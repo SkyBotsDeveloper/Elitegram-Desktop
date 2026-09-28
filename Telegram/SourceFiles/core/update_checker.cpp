@@ -5,6 +5,10 @@ the official desktop application for the Telegram messaging service.
 For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
+// Elitegram releases are distributed separately and must never install an
+// official Telegram Desktop update over the custom executable.
+#define TDESKTOP_DISABLE_AUTOUPDATE
+
 #include "core/update_checker.h"
 
 #include "platform/platform_specific.h"

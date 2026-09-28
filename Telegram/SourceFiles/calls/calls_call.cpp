@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "calls/calls_call.h"
+#include "elitegram/elitegram_outgoing_audio.h"
 
 #include "apiwrap.h"
 #include "base/openssl_help.h"
@@ -520,6 +521,7 @@ rpl::producer<Webrtc::DeviceResolvedId> Call::captureMuteDeviceId() {
 
 void Call::setMuted(bool mute) {
 	_muted = mute;
+	if (_outgoingAudio) _outgoingAudio->setMuted(mute);
 	if (_instance) {
 		_instance->setMuteMicrophone(mute);
 	}
@@ -1128,6 +1130,7 @@ void Call::createAndStartController(const MTPDphoneCall &call) {
 		});
 	};
 
+	_outgoingAudio = Elitegram::OutgoingAudio::Create(false);
 	tgcalls::Descriptor descriptor = {
 		.version = versionString,
 		.config = tgcalls::Config{
@@ -1188,7 +1191,11 @@ void Call::createAndStartController(const MTPDphoneCall &call) {
 			});
 		},
 		.createAudioDeviceModule = Webrtc::AudioDeviceModuleCreator(
-			saveSetDeviceIdCallback),
+			saveSetDeviceIdCallback,
+			[audio = _outgoingAudio](
+					int16_t *pcm, int frames, int rate, int channels) {
+				audio->process(pcm, frames, rate, channels);
+			}),
 	};
 	if (Logs::DebugEnabled()) {
 		const auto callLogFolder = cWorkingDir() + u"DebugLogs"_q;
@@ -1237,6 +1244,9 @@ void Call::createAndStartController(const MTPDphoneCall &call) {
 	}
 
 	const auto raw = _instance.get();
+	_outgoingAudio->setMuted(_muted.current());
+	_outgoingAudio->pauseDeviceAudio(_screenWithAudio);
+	_outgoingAudio->start();
 	if (_muted.current()) {
 		raw->setMuteMicrophone(_muted.current());
 	}
@@ -1485,6 +1495,7 @@ void Call::toggleScreenSharing(
 		std::optional<QString> uniqueId,
 		bool withAudio) {
 	if (!uniqueId) {
+		if (_outgoingAudio) _outgoingAudio->pauseDeviceAudio(false);
 		if (isSharingScreen()) {
 			if (_videoCapture) {
 				_videoCapture->setState(tgcalls::VideoState::Inactive);
@@ -1507,6 +1518,7 @@ void Call::toggleScreenSharing(
 	_videoCaptureIsScreencast = true;
 	_videoCaptureDeviceId = *uniqueId;
 	_screenWithAudio = withAudio;
+	if (_outgoingAudio) _outgoingAudio->pauseDeviceAudio(withAudio);
 	if (_videoCapture) {
 		_videoCapture->switchToDevice(uniqueId->toStdString(), true);
 		if (_instance) {
@@ -1695,6 +1707,7 @@ void Call::handleControllerError(const QString &error) {
 }
 
 void Call::destroyController() {
+	if (_outgoingAudio) _outgoingAudio->stop();
 	_instanceLifetime.destroy();
 	Core::App().mediaDevices().setCaptureMuteTracker(this, false);
 	if (_systemAudioCapture) {

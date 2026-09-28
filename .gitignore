@@ -1,4 +1,6 @@
 /out/
+/publish/
+/ELITEGRAM_CONTEXT.md
 Debug/
 Release/
 /ThirdParty/
@@ -63,7 +65,14 @@ settings.local.json
 *.local.json
 .env
 .env.local
+.env.*
+!.env.example
+!.env.template
 .env.*.local
+*.pdb
+*.ilk
+*.log
+*.user
 
 # Cursor IDE local settings (but keep .cursor/rules/)
 .cursor/*

@@ -72,7 +72,7 @@ QString CachedUserpics::get(
 		if (key.first || key.second) {
 			GenerateUserpic(peer, view).save(v.path, "PNG");
 		} else {
-			LogoNoMargin().save(v.path, "PNG");
+			Logo().save(v.path, "PNG");
 		}
 		i = _images.insert(key, v);
 		_someSavedFlag = true;

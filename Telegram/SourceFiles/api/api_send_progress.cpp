@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "api/api_send_progress.h"
+#include "elitegram/elitegram_privacy.h"
 
 #include "main/main_session.h"
 #include "history/history.h"
@@ -109,6 +110,9 @@ bool SendProgressManager::updated(const Key &key, bool doing) {
 }
 
 void SendProgressManager::send(const Key &key, int progress) {
+	if (_session->elitegramPrivacy().suppressSendActions()) {
+		return;
+	}
 	if (skipRequest(key)) {
 		return;
 	}

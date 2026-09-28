@@ -4879,6 +4879,17 @@ void ChatWidget::handleSupportSwitch(not_null<History*> updated) {
 	}
 }
 
+std::optional<ListDelegate::ArchiveScope> ChatWidget::listArchiveScope() const {
+	if (_sublist || _replies || _repliesRootId
+		|| !_peer->isUser() || _peer->isSelf()) {
+		return std::nullopt;
+	}
+	return ListDelegate::ArchiveScope{
+		.peer = _peer->id,
+		.topic = MsgId(), // Ordinary private-DM history, not an item topic root.
+	};
+}
+
 rpl::producer<Data::MessagesSlice> ChatWidget::listSource(
 		Data::MessagePosition aroundId,
 		int limitBefore,

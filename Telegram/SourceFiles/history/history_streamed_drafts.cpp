@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_streamed_drafts.h"
+#include "elitegram/elitegram_privacy.h"
 
 #include "api/api_text_entities.h"
 #include "apiwrap.h"
@@ -315,6 +316,10 @@ void HistoryStreamedDrafts::requestStop(MsgId rootId) {
 		return;
 	}
 	const auto topMsgId = _drafts.find(*randomId)->second.topMsgId;
+	if (_history->session().elitegramPrivacy().suppressSendActions()) {
+		applyStop(*randomId);
+		return;
+	}
 	_history->session().api().request(MTPmessages_SetTyping(
 		MTP_flags(topMsgId
 			? MTPmessages_SetTyping::Flag::f_top_msg_id

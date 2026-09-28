@@ -183,6 +183,7 @@ public:
 	QRect floatPlayerAvailableRect() override;
 
 	// ListDelegate interface.
+	std::optional<ListDelegate::ArchiveScope> listArchiveScope() const override;
 	Context listContext() override;
 	bool listScrollTo(int top, bool syntetic = true) override;
 	void listCancelRequest() override;

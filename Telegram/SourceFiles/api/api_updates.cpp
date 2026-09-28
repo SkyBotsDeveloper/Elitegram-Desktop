@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "api/api_updates.h"
+#include "elitegram/elitegram_privacy.h"
 
 #include "api/api_authorizations.h"
 #include "api/api_user_names.h"
@@ -1021,7 +1022,10 @@ void Updates::updateOnline(crl::time lastNonIdleTime, bool gotOtherOffline) {
 
 		_lastWasOnline = isOnline;
 		_lastSetOnline = ms;
-		if (!Core::Quitting()) {
+		if (isOnline
+			&& _session->elitegramPrivacy().suppressOnlinePresence()) {
+			_onlineRequest = 0;
+		} else if (!Core::Quitting()) {
 			_onlineRequest = api().request(MTPaccount_UpdateStatus(
 				MTP_bool(!isOnline)
 			)).send();

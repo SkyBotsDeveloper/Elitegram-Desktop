@@ -19,6 +19,8 @@ namespace Data {
 class GroupCall;
 } // namespace Data
 
+namespace Elitegram { class OutgoingAudio; }
+
 namespace Media {
 namespace Audio {
 class Track;
@@ -215,6 +217,9 @@ public:
 	}
 
 	void setMuted(bool mute);
+	[[nodiscard]] std::shared_ptr<Elitegram::OutgoingAudio> outgoingAudio() const {
+		return _outgoingAudio;
+	}
 	[[nodiscard]] bool muted() const {
 		return _muted.current();
 	}
@@ -387,6 +392,7 @@ private:
 	std::vector<not_null<PeerData*>> _conferenceParticipants;
 
 	std::unique_ptr<tgcalls::Instance> _instance;
+	std::shared_ptr<Elitegram::OutgoingAudio> _outgoingAudio;
 	std::shared_ptr<tgcalls::VideoCaptureInterface> _videoCapture;
 	QString _videoCaptureDeviceId;
 	bool _videoCaptureIsScreencast = false;

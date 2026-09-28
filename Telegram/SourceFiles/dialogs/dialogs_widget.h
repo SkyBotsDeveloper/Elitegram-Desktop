@@ -86,6 +86,7 @@ class InnerWidget;
 struct SearchRequestType;
 enum class SearchRequestDelay : uchar;
 class Suggestions;
+class ElitegramPromoBanner;
 class ChatSearchIn;
 enum class ChatSearchTab : uchar;
 enum class HashOrCashtag : uchar;
@@ -257,6 +258,7 @@ private:
 	void updateJumpToDateVisibility(bool fast = false);
 	void updateSearchFromVisibility(bool fast = false);
 	void updateControlsGeometry();
+	[[nodiscard]] bool promoBannerVisible() const;
 	void refreshTopBars();
 	void showSearchInTopBar(anim::type animated);
 	void checkUpdateStatus();
@@ -353,6 +355,7 @@ private:
 	std::unique_ptr<HistoryView::ContactStatus> _forumReportBar;
 
 	base::unique_qptr<Ui::RpWidget> _chatFilters;
+	object_ptr<ElitegramPromoBanner> _elitegramPromoBanner = { nullptr };
 
 	base::unique_qptr<Ui::SlideWrap<Ui::RpWidget>> _topBarSuggestion;
 	base::unique_qptr<Ui::RpWidget> _topBarSuggestionPlaceholder;

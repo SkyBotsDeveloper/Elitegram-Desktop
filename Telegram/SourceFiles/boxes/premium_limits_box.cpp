@@ -1069,6 +1069,21 @@ void AccountsLimitBox(
 		not_null<Main::Session*> session) {
 	const auto defaultLimit = Main::Domain::kMaxAccounts;
 	const auto premiumLimit = Main::Domain::kPremiumMaxAccounts;
+	if (defaultLimit == premiumLimit) {
+		box->setWidth(st::boxWideWidth);
+		box->setTitle(tr::lng_accounts_limit_title());
+		box->verticalLayout()->add(
+			object_ptr<Ui::FlatLabel>(
+				box,
+				tr::lng_accounts_limit1(
+					lt_count,
+					rpl::single<float64>(defaultLimit),
+					tr::rich),
+				st::aboutRevokePublicLabel),
+			st::boxPadding);
+		box->addButton(tr::lng_box_ok(), [=] { box->closeBox(); });
+		return;
+	}
 
 	using Args = Ui::Premium::AccountsRowArgs;
 	const auto accounts = session->domain().orderedAccounts();

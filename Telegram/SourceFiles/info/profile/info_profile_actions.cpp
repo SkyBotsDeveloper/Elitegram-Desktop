@@ -47,6 +47,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_saved_sublist.h"
 #include "data/data_session.h"
 #include "data/data_user.h"
+#include "elitegram/elitegram_dc.h"
 #include "data/notify/data_notify_settings.h"
 #include "data/stickers/data_custom_emoji.h"
 #include "dialogs/ui/dialogs_layout.h"
@@ -73,6 +74,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "iv/iv_instance.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
+#include "main/main_session_settings.h"
 #include "menu/menu_mute.h"
 #include "settings/settings_common.h"
 #include "support/support_helper.h"
@@ -1876,6 +1878,39 @@ Section DetailsFiller::makeInfo() {
 			setupAboutContextMenu(about.text, AboutWithAdvancedValue(_peer));
 			SetupAboutPeerIdDrag(about.text, _peer);
 		}
+	}
+	if (!_topic && !_sublist) {
+		const auto peer = _peer;
+		const auto session = &peer->session();
+		auto mainDcChanges = session->account().mtpValue()
+			| rpl::map([](not_null<MTP::Instance*> mtp) {
+				return mtp->isKeysDestroyer()
+					? rpl::single(MTP::DcId(0))
+					: mtp->mainDcIdValue();
+			}) | rpl::flatten_latest();
+		auto dcText = rpl::combine(
+			session->settings().elitegramShowDcValue(),
+			session->changes().peerFlagsValue(
+				peer,
+				Data::PeerUpdate::Flag::Photo
+					| Data::PeerUpdate::Flag::FullInfo),
+			std::move(mainDcChanges)
+		) | rpl::map([=](bool shown, const Data::PeerUpdate &, MTP::DcId) {
+			if (!shown) {
+				return TextWithEntities();
+			}
+			const auto dc = Elitegram::ResolvePeerDc(peer);
+			return dc ? TextWithEntities{ Elitegram::FormatDc(*dc) }
+				: TextWithEntities();
+		});
+		auto line = CreateTextWithLabel(
+			result,
+			rpl::single(TextWithEntities{ u"Data Center"_q }),
+			std::move(dcText),
+			st::infoLabel,
+			st::infoLabeledOneLine,
+			st::infoProfileLabeledPadding);
+		tracker.track(result->add(std::move(line.wrap)));
 	}
 	raw->toggleOn(tracker.atLeastOneShownValue());
 	raw->finishAnimating();

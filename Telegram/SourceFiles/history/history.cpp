@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "dialogs/dialogs_indexed_list.h"
 #include "history/history_inner_widget.h"
 #include "history/history_item.h"
+#include "elitegram/elitegram_deleted_messages.h"
 #include "history/history_item_components.h"
 #include "history/history_item_helpers.h"
 #include "history/history_streamed_drafts.h"
@@ -587,6 +588,8 @@ not_null<HistoryItem*> History::createItem(
 		if (result->needsUpdateForVideoQualities(message)) {
 			owner().updateEditedMessage(message);
 		}
+		session().deletedMessages().snapshot(
+			result, newMessage && !result->out());
 		return result;
 	}
 	const auto result = message.match([&](const auto &data) {
@@ -603,6 +606,8 @@ not_null<HistoryItem*> History::createItem(
 			session().topGuestChatBots().increment(bot, result->date());
 		}
 	}
+	session().deletedMessages().snapshot(
+		result, newMessage && !result->out());
 	return result;
 }
 

@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "calls/group/calls_group_menu.h"
+#include "elitegram/elitegram_outgoing_audio.h"
 
 #include "calls/group/calls_group_call.h"
 #include "calls/group/calls_group_settings.h"
@@ -595,6 +596,21 @@ void FillMenu(
 				? tr::lng_group_call_screen_share_stop(tr::now)
 				: tr::lng_group_call_screen_share_start(tr::now)),
 			toggle);
+	}
+	if (call->state() == GroupCall::Joined
+		&& Elitegram::OutgoingAudio::selectedEnabled()) {
+		if (const auto audio = call->outgoingAudio()) {
+			const auto playing = (audio->selectedState()
+				!= Elitegram::SelectedState::Idle)
+				&& (audio->selectedState()
+					!= Elitegram::SelectedState::Finished);
+			menu->addAction(
+				playing ? u"Stop Selected Audio"_q : u"Play Selected Audio"_q,
+				[audio, playing] {
+					if (playing) audio->stopSelectedAudio();
+					else audio->chooseSelectedAudio();
+				});
+		}
 	}
 	menu->addAction(tr::lng_group_call_settings(tr::now), [=] {
 		if (const auto strong = weak.get()) {
